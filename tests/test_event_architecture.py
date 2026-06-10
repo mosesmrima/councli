@@ -1,0 +1,1369 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+import yaml
+
+from councli.agents import AgentRunner
+from councli.cli import broadcast_runner, implementation_runner, native_session_runner, parse_turn_trailer, supports_native_session
+from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
+from councli.council import decide_council, decide_review, empty_vote, next_executor, parse_review, run_blackboard_council
+from councli.events import EventLedger, read_events
+from councli.gitops import create_worktree, diff
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON = sys.executable
+
+
+def state_phases(run_dir: Path) -> set[str]:
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    return set((state.get("phases") or {}).keys())
+
+
+def fake_agent_script() -> str:
+    return (
+        "import json, pathlib, re, sys\n"
+        "name = sys.argv[1]\n"
+        "scenario = {}\n"
+        "if len(sys.argv) == 4:\n"
+        "    scenario = json.loads(pathlib.Path(sys.argv[2]).read_text())\n"
+        "    prompt = sys.argv[3]\n"
+        "else:\n"
+        "    prompt = sys.argv[2]\n"
+        "packet_match = re.search(r'PACKET_FILE=([^ ]+)', prompt)\n"
+        "output_match = re.search(r'OUTPUT_FILE=([^ ]+)', prompt)\n"
+        "if packet_match and output_match:\n"
+        "    packet = pathlib.Path(packet_match.group(1))\n"
+        "    out = pathlib.Path(output_match.group(1))\n"
+        "    text = packet.read_text()\n"
+        "    phase = re.search(r'^Phase: ([a-z]+)$', text, re.M).group(1)\n"
+        "    attempt_match = re.search(r'Attempt: ([0-9]+)', text)\n"
+        "    attempt = int(attempt_match.group(1)) if attempt_match else 1\n"
+        "    out.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    if phase == 'vote':\n"
+        "        executor = scenario.get('executor_votes', {}).get(name, 'alpha')\n"
+        "        body = json.dumps({'preferred_plan': 'plan:alpha:1', 'preferred_executor': executor, 'confidence': 0.95, 'blocking_concerns': [], 'reason': name + ' vote'})\n"
+        "    elif phase == 'review':\n"
+        "        verdicts = scenario.get('review_verdicts', {}).get(name, ['approve'])\n"
+        "        verdict = verdicts[min(attempt - 1, len(verdicts) - 1)]\n"
+        "        if verdict == 'garbage':\n"
+        "            body = 'not json'\n"
+        "        else:\n"
+        "            concerns = ['missing test'] if verdict in ('request_changes', 'replace') else []\n"
+        "            body = json.dumps({'verdict': verdict, 'confidence': 0.95, 'blocking_concerns': concerns, 'reason': name + ' ' + verdict})\n"
+        "    else:\n"
+        "        body = phase.upper() + ' from ' + name\n"
+        "    out.write_text(body)\n"
+        "    print('wrote ' + str(out))\n"
+        "elif 'COUNCLI_SHARED_TURN=1' in prompt:\n"
+        "    intent_match = re.search(r'COUNCLI_INTENT=([^\\n]+)', prompt)\n"
+        "    intent = intent_match.group(1) if intent_match else 'chat'\n"
+        "    round_match = re.search(r'^Round: ([0-9]+)$', prompt, re.M)\n"
+        "    round_no = int(round_match.group(1)) if round_match else 1\n"
+        "    print(name + ' shared ' + intent + ' response round ' + str(round_no))\n"
+        "    print('COUNCLI_TRAILER')\n"
+        "    print('continue: false')\n"
+        "    print('recommend: none')\n"
+        "    print('summary: ' + name + ' handled ' + intent)\n"
+        "    if intent == 'vote':\n"
+        "        print('vote: option-' + name)\n"
+        "        print('confidence: 0.9')\n"
+        "else:\n"
+        "    path = pathlib.Path('README.md')\n"
+        "    suffix = ' addressed missing test' if 'missing test' in prompt else ''\n"
+        "    path.write_text(path.read_text() + 'implemented by ' + name + suffix + '\\n')\n"
+        "    pathlib.Path('implemented.txt').write_text('implemented by ' + name + '\\n')\n"
+        "    print('implemented by ' + name)\n"
+    )
+
+
+class EventArchitectureTests(unittest.TestCase):
+    def set_state_home(self, path: Path) -> None:
+        previous = os.environ.get("COUNCLI_STATE_HOME")
+        os.environ["COUNCLI_STATE_HOME"] = str(path)
+
+        def restore() -> None:
+            if previous is None:
+                os.environ.pop("COUNCLI_STATE_HOME", None)
+            else:
+                os.environ["COUNCLI_STATE_HOME"] = previous
+
+        self.addCleanup(restore)
+
+    def prepare_fake_repo(
+        self,
+        tmp: str,
+        *,
+        scenario: dict | None = None,
+        agents: tuple[str, ...] = ("alpha", "beta"),
+        max_rounds: int = 2,
+    ) -> tuple[Path, Path]:
+        self.set_state_home(Path(tmp) / "state")
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        subprocess.run(["git", "init"], cwd=root, text=True, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+        (root / "README.md").write_text("initial\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=root, text=True, capture_output=True, check=True)
+        script = root / "fake_agent.py"
+        script.write_text(fake_agent_script(), encoding="utf-8")
+        scenario_path = root / "scenario.json"
+        scenario_path.write_text(json.dumps(scenario or {}), encoding="utf-8")
+        config_dir = root / ".councli"
+        config_dir.mkdir()
+        (config_dir / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "agents": {
+                        name: {
+                            "enabled": True,
+                            "backend": "exec",
+                            "binary": PYTHON,
+                            "command": [PYTHON, str(script), name, str(scenario_path), "{prompt}"],
+                            "broadcast_command": [PYTHON, str(script), name, str(scenario_path), "{prompt}"],
+                            "timeout_seconds": 60,
+                        }
+                        for name in agents
+                    },
+                    "consensus": {"max_rounds": max_rounds, "min_confidence": 0.55},
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        trust_project_config(root, reason="test", repair_identity=True)
+        return root, scenario_path
+
+    def run_fake_councli(self, root: Path, *extra_args: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+        proc = subprocess.run(
+            [
+                PYTHON,
+                "-m",
+                "councli",
+                "run",
+                "add implemented file",
+                "-C",
+                str(root),
+                "--allow-dirty",
+                *extra_args,
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        latest = max((root / ".councli" / "runs").iterdir(), key=lambda path: path.name)
+        return proc, latest
+
+    def test_event_ledger_renders_state_and_blackboard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            ledger = EventLedger(run_dir, run_id="run")
+            ledger.append("run.started", payload={"task": "build a tiny app"})
+            ledger.append("participant.joined", participant="codex", payload={"reason": "available"})
+            content_ref = ledger.write_blob("propose", "codex", "PLAN\n- keep it simple")
+            ledger.append(
+                "response.received",
+                phase="propose",
+                participant="codex",
+                refs={"content": content_ref},
+            )
+            ledger.render()
+
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
+
+            self.assertEqual(state["task"], "build a tiny app")
+            self.assertIn("codex", state["participants"])
+            self.assertEqual(state["phases"]["propose"]["codex"]["content"], "PLAN\n- keep it simple")
+            self.assertIn("PLAN\n- keep it simple", blackboard)
+
+    def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / ".councli" / "runs" / "dry-council"
+            runners = {
+                "codex": AgentRunner(
+                    "codex",
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", "print('unused')"],
+                    ),
+                ),
+                "claude": AgentRunner(
+                    "claude",
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", "print('unused')"],
+                    ),
+                ),
+            }
+
+            result = run_blackboard_council(
+                task="design a CLI",
+                runners=runners,
+                root=root,
+                run_dir=run_dir,
+                dry_run=True,
+            )
+
+            events = read_events(run_dir)
+            event_types = [event["type"] for event in events]
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+
+            self.assertTrue(result.decision["approved"])
+            self.assertEqual(result.decision["selected_plan"], "plan:codex:1")
+            self.assertIn("run.started", event_types)
+            self.assertIn("participant.joined", event_types)
+            self.assertIn("plan.candidate.created", event_types)
+            self.assertIn("ballot.submitted", event_types)
+            self.assertIn("decision.finalized", event_types)
+            self.assertIn("plan:codex:1", state["plans"])
+            self.assertTrue((run_dir / "events.jsonl").exists())
+            self.assertTrue((run_dir / "blackboard.md").exists())
+
+    def test_single_participant_exec_backend_is_unreviewed_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / ".councli" / "runs" / "exec-council"
+            script = (
+                "import json, re, sys, pathlib\n"
+                "prompt = sys.argv[1]\n"
+                "packet = pathlib.Path(re.search(r'PACKET_FILE=([^ ]+)', prompt).group(1))\n"
+                "out = pathlib.Path(re.search(r'OUTPUT_FILE=([^ ]+)', prompt).group(1))\n"
+                "text = packet.read_text()\n"
+                "phase = re.search(r'Phase: ([a-z]+)', text).group(1)\n"
+                "out.parent.mkdir(parents=True, exist_ok=True)\n"
+                "if phase == 'vote':\n"
+                "    body = json.dumps({'preferred_plan': 'plan:fake:1', 'preferred_executor': 'fake', 'confidence': 0.9, 'blocking_concerns': [], 'reason': 'packet test'})\n"
+                "else:\n"
+                "    body = phase.upper() + ' from packet test'\n"
+                "out.write_text(body)\n"
+                "print('wrote ' + str(out))\n"
+            )
+            runners = {
+                "fake": AgentRunner(
+                    "fake",
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", script, "{prompt}"],
+                    ),
+                ),
+            }
+
+            result = run_blackboard_council(
+                task="verify packet delivery",
+                runners=runners,
+                root=root,
+                run_dir=run_dir,
+                dry_run=False,
+            )
+
+            events = read_events(run_dir)
+            event_types = [event["type"] for event in events]
+            packet_files = list((run_dir / "packets" / "fake").glob("*.md"))
+
+            self.assertFalse(result.decision["approved"])
+            self.assertEqual(result.decision["status"], "unreviewed_recommendation")
+            self.assertEqual(result.decision["selected_plan"], "plan:fake:1")
+            self.assertIn("view.sent", event_types)
+            self.assertIn("run.completed", event_types)
+            self.assertGreaterEqual(len(packet_files), 4)
+            self.assertTrue((run_dir / "incoming" / "vote" / "fake.json").exists())
+
+    def test_council_exec_backend_approves_two_participant_packet_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / ".councli" / "runs" / "two-exec-council"
+            script = (
+                "import json, re, sys, pathlib\n"
+                "prompt = sys.argv[1]\n"
+                "packet = pathlib.Path(re.search(r'PACKET_FILE=([^ ]+)', prompt).group(1))\n"
+                "out = pathlib.Path(re.search(r'OUTPUT_FILE=([^ ]+)', prompt).group(1))\n"
+                "text = packet.read_text()\n"
+                "participant = re.search(r'^Participant: (.+)$', text, re.M).group(1).strip()\n"
+                "phase = re.search(r'^Phase: ([a-z]+)$', text, re.M).group(1)\n"
+                "participants = re.search(r'^Participants: (.+)$', text, re.M).group(1).split(', ')\n"
+                "out.parent.mkdir(parents=True, exist_ok=True)\n"
+                "if phase == 'vote':\n"
+                "    body = json.dumps({'preferred_plan': 'plan:alpha:1', 'preferred_executor': participants[0], 'confidence': 0.9, 'blocking_concerns': [], 'reason': participant + ' vote'})\n"
+                "else:\n"
+                "    body = phase.upper() + ' from ' + participant\n"
+                "out.write_text(body)\n"
+                "print('wrote ' + str(out))\n"
+            )
+            runners = {
+                name: AgentRunner(
+                    name,
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", script, "{prompt}"],
+                    ),
+                )
+                for name in ("alpha", "beta")
+            }
+
+            result = run_blackboard_council(
+                task="verify concurrent packet delivery",
+                runners=runners,
+                root=root,
+                run_dir=run_dir,
+                dry_run=False,
+            )
+
+            events = read_events(run_dir)
+            event_types = [event["type"] for event in events]
+
+            self.assertTrue(result.decision["approved"])
+            self.assertEqual(result.decision["status"], "approved")
+            self.assertEqual(result.decision["selected_plan"], "plan:alpha:1")
+            self.assertEqual(result.decision["selected_executor"], "alpha")
+            self.assertIn("orient", state_phases(run_dir))
+            self.assertEqual(event_types.count("view.sent"), 10)
+            self.assertIn("run.completed", event_types)
+
+    def test_vote_parse_failure_is_abstention_not_veto(self) -> None:
+        votes = {
+            "alpha": {
+                "preferred_plan": "plan:alpha:1",
+                "preferred_executor": "alpha",
+                "confidence": 0.9,
+                "blocking_concerns": [],
+                "reason": "valid",
+            },
+            "beta": {
+                "preferred_plan": "plan:alpha:1",
+                "preferred_executor": "alpha",
+                "confidence": 0.9,
+                "blocking_concerns": [],
+                "reason": "valid",
+            },
+            "gamma": empty_vote("invalid JSON vote"),
+        }
+
+        decision = decide_council(votes, ["alpha", "beta", "gamma"], ["plan:alpha:1", "plan:beta:1", "plan:gamma:1"])
+
+        self.assertTrue(decision["approved"])
+        self.assertEqual(decision["status"], "approved")
+        self.assertEqual(decision["blocking_concerns"], [])
+        self.assertEqual(decision["abstentions"], {"gamma": "invalid JSON vote"})
+
+    def test_tmux_executor_requires_prompt_capable_exec_command(self) -> None:
+        runner = AgentRunner(
+            "interactive_only",
+            AgentConfig(
+                backend="tmux",
+                binary=PYTHON,
+                command=[PYTHON],
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            implementation_runner(runner)
+
+    def test_broadcast_runner_falls_back_to_prompt_capable_command(self) -> None:
+        runner = AgentRunner(
+            "yolo",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('could edit')", "{prompt}"],
+                broadcast_read_only=True,
+            ),
+        )
+
+        self.assertEqual(broadcast_runner(runner).config.command, runner.config.command)
+
+        unsafe_fallback = AgentRunner(
+            "unsafe",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('allowed fallback')", "{prompt}"],
+                broadcast_read_only=False,
+            ),
+        )
+        self.assertEqual(broadcast_runner(unsafe_fallback).config.command, unsafe_fallback.config.command)
+
+    def test_review_parser_and_decision_helpers(self) -> None:
+        parsed = parse_review('prefix {"verdict":"approve","confidence":"high","blocking_concerns":[],"reason":"ok"} suffix')
+        self.assertEqual(parsed["verdict"], "approve")
+        self.assertFalse(parsed["abstained"])
+        self.assertGreater(parsed["confidence"], 0.8)
+
+        bad = parse_review("not json")
+        self.assertTrue(bad["abstained"])
+        self.assertEqual(bad["blocking_concerns"], [])
+
+        accepted = decide_review(
+            {
+                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "b": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "c": parse_review("bad"),
+            },
+            ["a", "b", "c"],
+            attempt=1,
+        )
+        self.assertEqual(accepted["verdict"], "accepted")
+
+        replace = decide_review(
+            {
+                "a": {"verdict": "replace", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "b": {"verdict": "replace", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+            },
+            ["a", "b"],
+            attempt=1,
+        )
+        self.assertEqual(replace["verdict"], "replace")
+
+        revise = decide_review(
+            {
+                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": ["missing test"], "abstained": False},
+                "b": {"verdict": "request_changes", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+            },
+            ["a", "b"],
+            attempt=1,
+        )
+        self.assertEqual(revise["verdict"], "revise")
+        self.assertEqual(next_executor({"alpha": 3, "beta": 2, "gamma": 0}, exclude={"alpha"}), "beta")
+        self.assertEqual(next_executor({"alpha": 3, "beta": 0}, exclude={"alpha"}, participants=["alpha", "beta"]), "beta")
+        self.assertIsNone(next_executor({"alpha": 3}, exclude={"alpha"}, participants=["alpha"]))
+
+        one_good_one_bad = decide_review(
+            {
+                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "b": parse_review("bad"),
+            },
+            ["a", "b"],
+            attempt=1,
+        )
+        self.assertEqual(one_good_one_bad["verdict"], "accepted")
+
+    def test_confidence_threshold_excludes_low_confidence_votes_and_reviews(self) -> None:
+        votes = {
+            "alpha": {
+                "preferred_plan": "plan:alpha:1",
+                "preferred_executor": "alpha",
+                "confidence": 0.4,
+                "blocking_concerns": [],
+                "reason": "weak",
+            },
+            "beta": {
+                "preferred_plan": "plan:alpha:1",
+                "preferred_executor": "alpha",
+                "confidence": 0.4,
+                "blocking_concerns": [],
+                "reason": "weak",
+            },
+        }
+
+        decision = decide_council(votes, ["alpha", "beta"], ["plan:alpha:1", "plan:beta:1"], min_confidence=0.55)
+        self.assertFalse(decision["approved"])
+        self.assertEqual(decision["status"], "low_confidence")
+        self.assertEqual(decision["plan_votes"]["plan:alpha:1"], 0)
+        self.assertEqual(decision["low_confidence_votes"], {"alpha": 0.4, "beta": 0.4})
+
+        review_decision = decide_review(
+            {
+                "alpha": {"verdict": "approve", "confidence": 0.4, "blocking_concerns": [], "abstained": False},
+                "beta": {"verdict": "approve", "confidence": 0.4, "blocking_concerns": [], "abstained": False},
+            },
+            ["alpha", "beta"],
+            attempt=1,
+            min_confidence=0.55,
+        )
+        self.assertFalse(review_decision["approved"])
+        self.assertEqual(review_decision["verdict"], "needs_user")
+        self.assertEqual(review_decision["counts"]["approve"], 0)
+        self.assertEqual(review_decision["low_confidence_reviews"], {"alpha": 0.4, "beta": 0.4})
+
+    def test_projection_includes_implementation_and_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            ledger = EventLedger(run_dir, run_id="run")
+            ledger.append("run.started", payload={"task": "implement"})
+            ledger.append(
+                "implementation.started",
+                participant="alpha",
+                payload={"attempt": 1, "executor": "alpha", "selected_plan": "plan:alpha:1", "worktree": "/tmp/wt", "branch": "b"},
+            )
+            diff_ref = ledger.write_blob("implementation", "diff", "diff --git a/file b/file", suffix="patch")
+            result_ref = ledger.write_blob("implementation", "result", "ok")
+            ledger.append(
+                "implementation.diff_submitted",
+                participant="alpha",
+                refs={"diff": diff_ref, "result": result_ref},
+                payload={"attempt": 1, "executor": "alpha", "ok": True, "branch": "b"},
+            )
+            ledger.append(
+                "review.submitted",
+                phase="review",
+                participant="beta",
+                payload={"attempt": 1, "review": {"verdict": "approve", "blocking_concerns": [], "abstained": False}},
+            )
+            ledger.append("review.finalized", phase="review", payload={"attempt": 1, "verdict": "accepted"})
+            ledger.append("run.completed", payload={"implemented": True, "status": "accepted"})
+            ledger.render()
+
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
+
+            self.assertEqual(state["implementation"]["attempts"][0]["diff_ref"], diff_ref)
+            self.assertEqual(state["reviews"]["1"]["beta"]["verdict"], "approve")
+            self.assertEqual(state["review_decision"]["verdict"], "accepted")
+            self.assertEqual(state["run_completed"]["status"], "accepted")
+            self.assertIn("## Implementation", blackboard)
+            self.assertIn("## Review Decision", blackboard)
+
+    def test_cli_run_executes_and_reviews_with_fake_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc, latest = self.run_fake_councli(root)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            events = read_events(latest)
+            event_types = [event["type"] for event in events]
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+            diff_text = (latest / "implementation" / "diff.patch").read_text(encoding="utf-8")
+
+            self.assertIn("implementation.diff_submitted", event_types)
+            self.assertIn("review.submitted", event_types)
+            self.assertIn("review.finalized", event_types)
+            self.assertEqual(state["review_decision"]["verdict"], "accepted")
+            self.assertTrue(state["run_completed"]["implemented"])
+            self.assertIn("implemented by alpha", diff_text)
+
+    def test_cli_run_replaces_executor_with_zero_vote_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(
+                tmp,
+                scenario={"review_verdicts": {"beta": ["replace"]}},
+            )
+            proc, latest = self.run_fake_councli(root)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+            attempts = state["implementation"]["attempts"]
+
+            self.assertEqual([attempt["executor"] for attempt in attempts], ["alpha", "beta"])
+            self.assertEqual(state["review_decision"]["verdict"], "accepted")
+            self.assertTrue(state["run_completed"]["implemented"])
+            self.assertIn("implemented by beta", (latest / "implementation" / "diff.patch").read_text(encoding="utf-8"))
+
+    def test_cli_run_revises_same_executor_then_accepts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(
+                tmp,
+                scenario={"review_verdicts": {"beta": ["request_changes", "approve"]}},
+            )
+            proc, latest = self.run_fake_councli(root)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+            attempts = state["implementation"]["attempts"]
+            diff_text = (latest / "implementation" / "diff.patch").read_text(encoding="utf-8")
+
+            self.assertEqual([attempt["executor"] for attempt in attempts], ["alpha", "alpha"])
+            self.assertEqual(state["review_decision"]["verdict"], "accepted")
+            self.assertTrue(state["run_completed"]["implemented"])
+            self.assertIn("addressed missing test", diff_text)
+
+    def test_cli_run_rounds_exhausted_after_repeated_review_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(
+                tmp,
+                scenario={"review_verdicts": {"beta": ["request_changes", "request_changes"]}},
+                max_rounds=2,
+            )
+            proc, latest = self.run_fake_councli(root)
+
+            self.assertEqual(proc.returncode, 2, proc.stderr + proc.stdout)
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(len(state["implementation"]["attempts"]), 2)
+            self.assertFalse(state["run_completed"]["implemented"])
+            self.assertEqual(state["run_completed"]["status"], "rounds_exhausted")
+
+    def test_cli_run_single_participant_force_is_unreviewed_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp, agents=("alpha",))
+            proc, latest = self.run_fake_councli(root, "--force")
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(len(state["implementation"]["attempts"]), 1)
+            self.assertEqual(state["review_decision"]["verdict"], "unreviewed_implementation")
+            self.assertTrue(state["run_completed"]["implemented"])
+
+    def test_cli_run_malformed_review_abstains_without_blocking_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(
+                tmp,
+                scenario={"review_verdicts": {"beta": ["approve"], "gamma": ["garbage"]}},
+                agents=("alpha", "beta", "gamma"),
+            )
+            proc, latest = self.run_fake_councli(root)
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(state["review_decision"]["verdict"], "accepted")
+            self.assertEqual(state["review_decision"]["abstentions"], {"gamma": "could not find JSON review"})
+            self.assertTrue(state["run_completed"]["implemented"])
+
+    def test_orient_is_not_registered_as_plan_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / ".councli" / "runs" / "dry-council"
+            runners = {
+                name: AgentRunner(
+                    name,
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", "print('unused')"],
+                    ),
+                )
+                for name in ("alpha", "beta")
+            }
+
+            run_blackboard_council(
+                task="check orient",
+                runners=runners,
+                root=root,
+                run_dir=run_dir,
+                dry_run=True,
+            )
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+
+            self.assertIn("orient", state["phases"])
+            self.assertEqual(set(state["plans"]), {"plan:alpha:1", "plan:beta:1"})
+
+    def test_stdout_only_phase_response_does_not_count_as_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / ".councli" / "runs" / "missing-output"
+            script = (
+                "import json\n"
+                "print(json.dumps({'preferred_plan': 'plan:alpha:1', 'preferred_executor': 'alpha', 'confidence': 1.0, 'blocking_concerns': [], 'reason': 'stdout only'}))\n"
+            )
+            runners = {
+                "alpha": AgentRunner(
+                    "alpha",
+                    AgentConfig(
+                        backend="exec",
+                        binary=PYTHON,
+                        command=[PYTHON, "-c", script, "{prompt}"],
+                    ),
+                )
+            }
+
+            result = run_blackboard_council(
+                task="stdout must not be accepted",
+                runners=runners,
+                root=root,
+                run_dir=run_dir,
+                dry_run=False,
+            )
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+
+            self.assertFalse(result.decision["approved"])
+            self.assertEqual(state["phases"]["orient"]["alpha"]["status"], "failed")
+            self.assertIn("missing required output file", state["phases"]["orient"]["alpha"]["error"])
+            self.assertTrue(state["votes"]["alpha"]["abstained"])
+            self.assertIn("missing required output file", state["votes"]["alpha"]["error"])
+
+    def test_worktree_diff_includes_committed_executor_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            worktree = create_worktree(root, run_name="committed-change", executor="alpha")
+            (worktree.path / "README.md").write_text("initial\ncommitted by executor\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=worktree.path, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "executor committed change"],
+                cwd=worktree.path,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+
+            diff_text = diff(worktree.path, base_ref=worktree.base_ref)
+
+            self.assertIn("committed by executor", diff_text)
+            self.assertIn("README.md", diff_text)
+
+    def test_cli_status_and_show_latest_expose_resume_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc, latest = self.run_fake_councli(root)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+            status = subprocess.run(
+                [PYTHON, "-m", "councli", "status", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            shown = subprocess.run(
+                [PYTHON, "-m", "councli", "show", "latest", "-C", str(root), "--blackboard"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(status.returncode, 0, status.stderr + status.stdout)
+            self.assertEqual(shown.returncode, 0, shown.stderr + shown.stdout)
+            self.assertIn(latest.name, status.stdout)
+            self.assertIn("add implemented file", status.stdout)
+            self.assertIn(f"Run: {latest.name}", shown.stdout)
+            self.assertIn("Blackboard:", shown.stdout)
+            self.assertIn("## Task", shown.stdout)
+
+    def test_cli_apply_dry_run_and_apply_accepted_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            subprocess.run(["git", "add", "fake_agent.py", "scenario.json"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "add fake agent"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            proc, latest = self.run_fake_councli(root)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+
+            dry = subprocess.run(
+                [PYTHON, "-m", "councli", "apply", "latest", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            applied = subprocess.run(
+                [PYTHON, "-m", "councli", "apply", "latest", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(dry.returncode, 0, dry.stderr + dry.stdout)
+            self.assertIn("Patch applies cleanly", dry.stdout)
+            self.assertEqual(applied.returncode, 0, applied.stderr + applied.stdout)
+            self.assertIn("Applied", applied.stdout)
+            self.assertIn("implemented by alpha", (root / "README.md").read_text(encoding="utf-8"))
+            self.assertEqual((root / "implemented.txt").read_text(encoding="utf-8"), "implemented by alpha\n")
+
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["implementation"]["applied"]["root"], str(root))
+
+    def test_cli_chat_runs_interactive_dry_council_and_local_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                input="/status\n/not-a-command\nmake a tiny plan\n//literal slash task\n/show latest\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("councli interactive", proc.stdout)
+            self.assertIn("Unknown councli command", proc.stdout)
+            self.assertIn("Responses", proc.stdout)
+            self.assertIn("Councli", proc.stdout)
+            self.assertIn("Run:", proc.stdout)
+            self.assertIn("/literal slash task", proc.stdout)
+            tasks = [
+                json.loads((path / "state.json").read_text(encoding="utf-8"))["task"]
+                for path in sorted((root / ".councli" / "runs").iterdir())
+                if path.is_dir()
+            ]
+            self.assertIn("make a tiny plan", tasks)
+            self.assertIn("/literal slash task", tasks)
+
+    def test_bare_cli_opens_control_plane_and_streams_visible_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="make a visible plan\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("councli interactive", proc.stdout)
+            self.assertIn("Task: make a visible plan", proc.stdout)
+            self.assertIn("Asking:", proc.stdout)
+            self.assertIn("Responses", proc.stdout)
+            self.assertIn("Councli", proc.stdout)
+
+    def test_council_without_task_falls_back_to_control_plane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "council", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("No council task supplied", proc.stdout)
+            self.assertIn("councli interactive", proc.stdout)
+
+    def test_deliberate_slash_command_uses_shared_turn_rounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                input="/deliberate pick a simple architecture\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("Intent: deliberate", proc.stdout)
+            self.assertIn("Round 1", proc.stdout)
+            self.assertIn("Round 2", proc.stdout)
+            self.assertNotIn("ORIENT", proc.stdout)
+
+    def test_parse_turn_trailer_strips_metadata(self) -> None:
+        body, trailer = parse_turn_trailer(
+            "Body answer\n\nCOUNCLI_TRAILER\ncontinue: true\nrecommend: vote\nsummary: key point\nvote: sqlite\nconfidence: 0.8\n"
+        )
+
+        self.assertEqual(body, "Body answer")
+        self.assertTrue(trailer["continue"])
+        self.assertEqual(trailer["recommend"], "vote")
+        self.assertEqual(trailer["summary"], "key point")
+        self.assertEqual(trailer["vote"], "sqlite")
+        self.assertEqual(trailer["confidence"], 0.8)
+
+    def test_cli_chat_supports_dry_attach_and_broadcast(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                input="/assistant alpha\n/broadcast compare options\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("would attach to alpha", proc.stdout)
+            self.assertIn("Broadcast:", proc.stdout)
+            runs = sorted((root / ".councli" / "runs").iterdir())
+            self.assertTrue(any(path.name.endswith("-broadcast") for path in runs))
+            latest = [path for path in runs if path.name.endswith("-broadcast")][-1]
+            self.assertTrue((latest / "brief.md").exists())
+            self.assertTrue((latest / "broadcast" / "alpha.md").exists())
+            state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
+            payload = state["phases"]["broadcast"]["alpha"]["refs"]
+            self.assertIn("content", payload)
+
+    def test_exec_backend_with_start_command_supports_native_session(self) -> None:
+        runner = AgentRunner(
+            "alpha",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('headless')", "{prompt}"],
+                start_command=[PYTHON, "-c", "print('native')"],
+            ),
+        )
+
+        self.assertTrue(supports_native_session(runner))
+        native_runner = native_session_runner(runner)
+        self.assertEqual(native_runner.config.backend, "tmux")
+        self.assertEqual(native_runner.config.command, [PYTHON, "-c", "print('native')"])
+
+    def test_kimi_headless_default_does_not_combine_prompt_with_yolo(self) -> None:
+        kimi = DEFAULT_CONFIG.agents["kimi"]
+
+        self.assertEqual(kimi.command, ["kimi", "--prompt", "{prompt}"])
+        self.assertEqual(kimi.start_command, ["kimi", "--yolo", "--auto"])
+
+    def test_task_brief_records_native_session_registry(self) -> None:
+        from councli.native import reconcile_session_registry, upsert_session, write_task_brief
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            upsert_session(
+                root,
+                agent="codex",
+                session_name="councli-codex",
+                backend="tmux",
+                cwd=root,
+                command=["codex"],
+                raw_capture=root / ".councli" / "session-recordings" / "codex.raw.log",
+            )
+
+            brief = write_task_brief(root, task="review the design", task_id="task-1")
+
+            text = brief.path.read_text(encoding="utf-8")
+            self.assertIn("review the design", text)
+            self.assertIn("codex: session=councli-codex", text)
+
+            registry = reconcile_session_registry(root, {})
+            self.assertEqual(registry["sessions"]["codex"]["status"], "stale")
+
+    def test_project_scoped_session_names_are_stable_and_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root_a = Path(tmp) / "a"
+            root_b = Path(tmp) / "b"
+            root_a.mkdir()
+            root_b.mkdir()
+            runner = AgentRunner("codex", AgentConfig(backend="tmux", binary=PYTHON, command=[PYTHON]))
+
+            first = runner.session_name_for(root_a)
+            second = runner.session_name_for(root_b)
+            alt = runner.session_name_for(root_a, instance="alt")
+
+            self.assertNotEqual(first, second)
+            self.assertNotEqual(first, alt)
+            self.assertTrue(first.startswith("councli-"))
+
+    def test_cli_brief_command_creates_manual_brief(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "brief", "manual architecture note", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("Brief:", proc.stdout)
+            briefs = list((root / ".councli" / "tasks").glob("manual-*/brief.md"))
+            self.assertEqual(len(briefs), 1)
+            self.assertIn("manual architecture note", briefs[0].read_text(encoding="utf-8"))
+
+    def test_sessions_import_preserves_native_session_id(self) -> None:
+        from councli.native import upsert_session
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            upsert_session(
+                root,
+                agent="alpha",
+                session_name="councli-alpha",
+                backend="exec",
+                cwd=root,
+                command=[PYTHON],
+                native_session_id="native-123",
+            )
+            upsert_session(
+                root,
+                agent="alpha",
+                session_name="councli-alpha",
+                backend="exec",
+                cwd=root,
+                command=[PYTHON],
+            )
+
+            registry = json.loads((root / ".councli" / "sessions" / "registry.json").read_text(encoding="utf-8"))
+            self.assertEqual(registry["sessions"]["alpha"]["native_session_id"], "native-123")
+
+    def test_project_config_executable_changes_require_retrust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["command"] = [PYTHON, "-c", "print('changed')", "{prompt}"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("trusted agent fields changed", blocked.stdout + blocked.stderr)
+
+            trusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
+
+            doctor = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["submit_keys"] = ["Enter", "Enter"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            blocked_transport = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked_transport.returncode, 0)
+            self.assertIn("trusted agent fields changed", blocked_transport.stdout + blocked_transport.stderr)
+
+    def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.set_state_home(Path(tmp) / "state")
+            root = Path(tmp) / "repo"
+            root.mkdir()
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertTrue(project_config_path(root).exists())
+            self.assertIn("Created default councli config", proc.stdout + proc.stderr)
+            self.assertIn("councli doctor", proc.stdout + proc.stderr)
+
+    def test_init_disable_missing_disables_absent_default_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.set_state_home(Path(tmp) / "state")
+            root = Path(tmp) / "repo"
+            bin_dir = Path(tmp) / "empty-bin"
+            root.mkdir()
+            bin_dir.mkdir()
+            env = os.environ.copy()
+            env["COUNCLI_STATE_HOME"] = str(Path(tmp) / "state")
+            env["PATH"] = str(bin_dir)
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "init", "--disable-missing", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            raw = yaml.safe_load(project_config_path(root).read_text(encoding="utf-8"))
+            self.assertTrue(raw["agents"])
+            self.assertTrue(all(agent["enabled"] is False for agent in raw["agents"].values()))
+            self.assertIn("Detected assistant CLIs", proc.stdout + proc.stderr)
+
+    def test_native_config_changes_require_retrust_and_validate_detach_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["native"] = {"detach_key": "C-a"}
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("trusted agent fields changed", blocked.stdout + blocked.stderr)
+
+            trusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
+
+            raw["native"] = {"detach_key": "#(echo pwned)"}
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            rejected = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("simple tmux key chord", rejected.stdout + rejected.stderr)
+
+    def test_project_identity_drift_requires_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            moved = Path(tmp) / "moved"
+            shutil.copytree(root, moved)
+
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(moved)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("different project path", blocked.stdout + blocked.stderr)
+
+            repaired = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "--repair-identity", "-C", str(moved)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(repaired.returncode, 0, repaired.stdout + repaired.stderr)
+
+            doctor = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(moved)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+
+    def test_sessions_import_lists_candidates_instead_of_guessing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "sessions", "import", "alpha", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("No native session candidates found", proc.stdout + proc.stderr)
+
+    def test_rawlog_rotates_and_uses_private_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recordings" / "alpha.raw.log"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "councli.rawlog",
+                    "--path",
+                    str(path),
+                    "--max-bytes",
+                    "10",
+                    "--backups",
+                    "2",
+                ],
+                input=b"0123456789abcdefghijKLMNOPQRST",
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr.decode("utf-8", errors="ignore"))
+            self.assertTrue(path.exists())
+            self.assertTrue(path.with_name("alpha.raw.log.1").exists())
+            self.assertEqual(path.stat().st_mode & 0o077, 0)
+            self.assertEqual(path.with_name("alpha.raw.log.1").stat().st_mode & 0o077, 0)
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
+    def test_tmux_session_lifecycle_reconcile_capture_and_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.set_state_home(Path(tmp) / "state")
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            socket = f"councli-test-{os.getpid()}-{int(time.time() * 1000)}"
+            config_dir = root / ".councli"
+            config_dir.mkdir()
+            (config_dir / "config.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "agents": {
+                            "alpha": {
+                                "enabled": True,
+                                "backend": "tmux",
+                                "binary": "bash",
+                                "command": ["bash", "--noprofile", "--norc"],
+                                "start_command": ["bash", "--noprofile", "--norc"],
+                                "resume_command": ["bash", "--noprofile", "--norc"],
+                                "prompt_style": "compact",
+                                "input_method": "paste",
+                                "submit_keys": ["Enter"],
+                                "timeout_seconds": 10,
+                            }
+                        },
+                        "native": {
+                            "tmux_socket": socket,
+                            "detach_key": "C-]",
+                            "raw_log_max_bytes": 1024,
+                            "raw_log_backups": 1,
+                            "session_prefix": "councli-test",
+                        },
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            trust_project_config(root, reason="test", repair_identity=True)
+            try:
+                started = subprocess.run(
+                    [PYTHON, "-m", "councli", "sessions", "start", "alpha", "-C", str(root)],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+
+                sent = subprocess.run(
+                    [
+                        PYTHON,
+                        "-m",
+                        "councli",
+                        "sessions",
+                        "send",
+                        "alpha",
+                        "echo COUNCLI_SMOKE",
+                        "-C",
+                        str(root),
+                        "--no-marker",
+                    ],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(sent.returncode, 0, sent.stdout + sent.stderr)
+                time.sleep(0.5)
+
+                listed = subprocess.run(
+                    [PYTHON, "-m", "councli", "sessions", "list", "-C", str(root)],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
+                self.assertIn("Pane Cmd", listed.stdout)
+                self.assertIn("running", listed.stdout)
+
+                registry = json.loads((root / ".councli" / "sessions" / "registry.json").read_text(encoding="utf-8"))
+                record = registry["sessions"]["alpha"]
+                self.assertEqual(record["process_status"], "running")
+                raw_capture = Path(record["raw_capture"])
+                self.assertTrue(raw_capture.exists())
+                self.assertEqual(raw_capture.stat().st_mode & 0o077, 0)
+
+                imported = subprocess.run(
+                    [
+                        PYTHON,
+                        "-m",
+                        "councli",
+                        "sessions",
+                        "import",
+                        "alpha",
+                        "-C",
+                        str(root),
+                        "--session-id",
+                        "native-123",
+                    ],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(imported.returncode, 0, imported.stdout + imported.stderr)
+
+                blocked_resume = subprocess.run(
+                    [
+                        PYTHON,
+                        "-m",
+                        "councli",
+                        "sessions",
+                        "resume",
+                        "alpha",
+                        "-C",
+                        str(root),
+                        "--no-attach",
+                    ],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(blocked_resume.returncode, 0)
+                self.assertIn("Refusing to resume over live session", blocked_resume.stdout + blocked_resume.stderr)
+
+                stopped = subprocess.run(
+                    [
+                        PYTHON,
+                        "-m",
+                        "councli",
+                        "sessions",
+                        "stop",
+                        "alpha",
+                        "-C",
+                        str(root),
+                        "--no-archive",
+                    ],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+
+                ledger_path = root / ".councli" / "ledger" / "events.jsonl"
+                deadline = time.time() + 3
+                ledger_text = ""
+                while time.time() < deadline:
+                    if ledger_path.exists():
+                        ledger_text = ledger_path.read_text(encoding="utf-8")
+                        if "tmux.session-closed" in ledger_text:
+                            break
+                    time.sleep(0.1)
+                self.assertIn("session.stopped", ledger_text)
+                self.assertIn("tmux.session-closed", ledger_text)
+            finally:
+                subprocess.run(["tmux", "-L", socket, "kill-server"], text=True, capture_output=True, check=False)
+
+
+if __name__ == "__main__":
+    unittest.main()

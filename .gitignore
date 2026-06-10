@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local councli state and generated artifacts
+.councli/
+
+# Local env and secret-bearing files
+.env
+.env.*
+*.pem
+*.key
+*.token
+*.secret
+id_rsa
+id_ed25519
+
+# Logs and local editor/OS noise
+*.log
+.DS_Store
+.idea/
+.vscode/
