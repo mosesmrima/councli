@@ -22,7 +22,9 @@ The first version is intentionally simple:
 
 For the consolidated research findings and implementation handoff, see
 [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) first; it is the
-canonical implementation reference. For the detailed binary launch, adapter
+canonical implementation reference. For the latest external MVP consultation
+from Claude Fable 5, see
+[`docs/FABLE_MVP_CONSULT.md`](docs/FABLE_MVP_CONSULT.md). For the detailed binary launch, adapter
 readiness, and communication protocol research, see
 [`docs/AGENT_LAUNCH_PROTOCOL.md`](docs/AGENT_LAUNCH_PROTOCOL.md). For the
 explicit tradeoff analysis and rejected alternatives, see
