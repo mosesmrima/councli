@@ -21,8 +21,8 @@ The current implementation already has useful pieces:
 
 The main protocol gaps are also clear:
 
-- shared-turn trailers are free-form text instead of schema-validated sidecars;
-- run event appends use a process-local thread lock, not a cross-process lock;
+- shared-turn trailers are still parsed as fallback text; sidecars exist but
+  need stricter schema validation before every machine decision;
 - the blackboard renderer still treats legacy phases as the primary structure;
 - participant failure classification is mostly stderr-text heuristics;
 - broadcast capability is represented by a boolean rather than a permission
@@ -363,8 +363,7 @@ Target event:
 
 ## Locking protocol
 
-The current run ledger lock is process-local. That is not enough when two
-`councli` processes operate in the same project. The target locking protocol:
+Run writes use a run-local `run.lock` with `fcntl.flock`. The locking protocol:
 
 1. Create `.councli/runs/<run-id>/run.lock`.
 2. Acquire exclusive advisory lock before:

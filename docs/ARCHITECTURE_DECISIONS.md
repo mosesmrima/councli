@@ -353,8 +353,9 @@ Failure handling:
 
 Current evidence:
 
-- `src/councli/events.py` uses a process-local `threading.Lock`. That protects
-  threads inside one process but not concurrent `councli` processes.
+- `src/councli/events.py` uses a run-local `run.lock` with `fcntl.flock` around
+  event appends and projection rendering. The fake-binary suite includes a
+  cross-process append test.
 
 ## Decision 7: Use git worktrees for source isolation, not security
 
@@ -578,7 +579,8 @@ Do not call the architecture production-grade until these gates pass:
 4. Shared turns emit `councli.response.v1` sidecars.
 5. `/vote`, `/review`, executor selection, and apply reject invalid sidecars.
 6. Event writes and projections use `fcntl.flock`.
-7. Headless subprocesses run in process groups and cancel cleanly.
+7. Headless subprocesses run in process groups and clean up on timeout; Ctrl-C
+   cleanup still needs the same process-group path.
 8. `councli verify` validates events, refs, sidecars, and projections.
 9. `runs recover` can rebuild `state.json` and `blackboard.md`.
 10. Context packing passes bounded blackboard excerpts instead of full history.

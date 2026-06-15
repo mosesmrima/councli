@@ -435,15 +435,12 @@ driven by these system boundaries rather than UI features:
 1. Add adapter-specific probe commands for auth, quota, model readiness,
    provider selection, and tool-permission mode, following the readiness states
    in `ADAPTER_CONTRACT.md`.
-2. Replace text trailers with validated sidecar JSON envelopes while keeping
-   Markdown artifacts for human inspection.
-3. Add a cross-process run lock around `events.jsonl`, `state.json`, and
-   `blackboard.md`, following `STATE_CONCURRENCY.md`; thread locks are not
-   sufficient if two councli processes touch the same run.
-4. Keep artifact files for large bodies, diffs, and logs, but add a SQLite WAL
+2. Continue tightening validated sidecar JSON envelopes while keeping Markdown
+   artifacts for human inspection.
+3. Keep artifact files for large bodies, diffs, and logs, but add a SQLite WAL
    index for runs, participants, events, statuses, and searches once run volume
    grows.
-5. Add retention and redaction policies for raw terminal recordings, command
+4. Add retention and redaction policies for raw terminal recordings, command
    output, prompts, and blackboards because they can contain credentials.
 6. Model observability explicitly: turn id as trace id, participant calls as
    spans, events as structured logs, and latency/error/token counts as metrics.

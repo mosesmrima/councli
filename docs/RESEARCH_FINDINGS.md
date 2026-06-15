@@ -76,15 +76,14 @@ The repository has the right design direction in documentation:
 The implementation is still MVP-grade in several places:
 
 - `AgentRunner.health()` mostly proves binary presence, not intent readiness.
-- Shared turns still rely on `COUNCLI_TRAILER` text instead of validated
-  response sidecars.
-- `EventLedger` uses a process-local `threading.Lock`, not a cross-process
-  `fcntl.flock` run lock.
+- Shared turns still parse `COUNCLI_TRAILER` text as a fallback; response
+  sidecars exist but need stricter validation before every machine decision.
 - The blackboard renderer still privileges legacy phases.
 - Failure classification is mostly stderr text heuristics.
 - `broadcast_read_only` is a boolean rather than a command capability model.
-- Timeout/cancellation does not yet model process groups and first-class
-  canceled turn state.
+- Headless exec timeout cleanup uses process groups; foreground Ctrl-C
+  cancellation still needs first-class process-group cleanup for active
+  participant calls.
 
 ## Non-negotiable architecture invariants
 
@@ -440,11 +439,10 @@ Use existing standards and tools where they fit:
   yolo/auto. That is invalid according to Kimi CLI docs and contradicts the
   current default config and tests. The correct headless Kimi command is
   `kimi --prompt {prompt}`.
-- `doctor` displays global availability but should evolve into
-  intent-specific readiness.
-- Shared-turn trailers are still text; response sidecars are not implemented
-  yet.
-- Event locks are process-local, not cross-process.
+- `doctor --json` reports intent readiness, but most adapters still need safe
+  default probes for auth/model/quota.
+- Shared-turn trailers are still text fallbacks; response sidecars need stricter
+  validation before every machine decision.
 
 ## Production readiness gates
 
@@ -455,7 +453,8 @@ Treat the system as not production-grade until these gates pass:
 3. Full-permission commands are rejected for read-only intents unless explicit
    fallback is configured.
 4. Binary path/version drift after trust is detected.
-5. Participant response sidecars are emitted and schema-validated.
+5. Participant response sidecars are emitted and validated before every machine
+   decision.
 6. Machine decisions reject missing or invalid sidecars.
 7. Run event writes use cross-process `fcntl.flock`.
 8. `councli verify` and `runs recover` can rebuild projections and detect missing
@@ -477,7 +476,7 @@ Treat the system as not production-grade until these gates pass:
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add binary path/version trust drift checks.
-9. Add process-group cancellation for headless calls.
+9. Finish process-group cancellation for Ctrl-C and active headless calls.
 10. Add `councli verify`, `runs recover`, and bounded context packing.
 11. Add retention/redaction and optional metrics export.
 12. Add SQLite WAL index only after the artifact protocol is stable.

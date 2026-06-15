@@ -24,17 +24,15 @@ Implemented today:
 - content-addressed blobs for some participant outputs;
 - project ledger with `fcntl.flock`;
 - native session registry with `fcntl.flock`;
+- run-local `run.lock` with `fcntl.flock` around event appends, packet writes,
+  blob writes, sequence allocation, and projection rendering;
 - project-level task briefs and recent-event context.
 
 Main gaps:
 
-- `EventLedger` uses a module-level `threading.Lock`; this protects threads in
-  one Python process, not concurrent `councli` processes.
-- Event sequence allocation reads the whole `events.jsonl` file and then
-  appends. Without a run-local process lock, two writers can allocate the same
-  sequence number.
 - `state.json` and `blackboard.md` are projections rendered after events. They
-  can become stale or be overwritten by a process with an older event view.
+  can still become stale if files are edited externally or a crash happens
+  after source artifacts are written but before projection rendering.
 - Atomic `os.replace` prevents partial destination files, but the current helper
   does not fsync file or directory metadata when stronger crash durability is
   needed.
@@ -384,15 +382,13 @@ Policy:
 
 Before treating the state layer as production-grade:
 
-1. Add run-local `fcntl.flock` around event append, sequence allocation, and
-   projection rendering.
-2. Add schema versions to events, requests, responses, and decisions.
-3. Add `.response.json` sidecars and validate them before machine decisions.
-4. Add recovery commands for malformed logs. `councli verify` already checks
+1. Add schema versions to events, requests, responses, and decisions.
+2. Keep expanding `.response.json` validation before machine decisions.
+3. Add recovery commands for malformed logs. `councli verify` already checks
    missing refs, invalid sidecars, and stale projections.
-5. Add bounded context-packing policy for blackboard excerpts.
-6. Add SQLite WAL index only after artifact protocol stabilizes.
-7. Add retention, redaction, and garbage-collection commands.
+4. Add bounded context-packing policy for blackboard excerpts.
+5. Add SQLite WAL index only after artifact protocol stabilizes.
+6. Add retention, redaction, and garbage-collection commands.
 8. Add tests that spawn two `councli` processes writing the same run ledger.
 
 ## Research references

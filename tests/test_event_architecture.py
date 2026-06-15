@@ -30,6 +30,23 @@ def state_phases(run_dir: Path) -> set[str]:
     return set((state.get("phases") or {}).keys())
 
 
+def process_is_active(pid: int) -> bool:
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        try:
+            state = proc_stat.read_text(encoding="utf-8").split()[2]
+            return state != "Z"
+        except (OSError, IndexError):
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def fake_agent_script() -> str:
     return (
         "import json, pathlib, re, sys\n"
@@ -236,6 +253,45 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(len(events), 100)
             self.assertEqual(seqs, list(range(100)))
             self.assertTrue((run_dir / "run.lock").exists())
+
+    def test_exec_timeout_terminates_child_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_file = root / "child.pid"
+            script = root / "spawn_child.py"
+            script.write_text(
+                "\n".join(
+                    [
+                        "import pathlib, subprocess, sys, time",
+                        "pid_file = pathlib.Path(sys.argv[1])",
+                        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+                        "pid_file.write_text(str(child.pid), encoding='utf-8')",
+                        "time.sleep(60)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            runner = AgentRunner(
+                "slow",
+                AgentConfig(
+                    backend="exec",
+                    binary=PYTHON,
+                    command=[PYTHON, str(script), str(pid_file)],
+                    timeout_seconds=1,
+                ),
+            )
+
+            result = runner.run("ignored", cwd=root)
+
+            self.assertFalse(result.ok)
+            self.assertEqual(result.failure_class, "timeout")
+            self.assertTrue(pid_file.exists())
+            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            deadline = time.monotonic() + 5
+            while process_is_active(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(process_is_active(child_pid), f"child process {child_pid} survived timeout cleanup")
 
     def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

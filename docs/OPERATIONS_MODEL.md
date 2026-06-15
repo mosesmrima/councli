@@ -29,9 +29,9 @@ Implemented today:
 
 Operational gaps:
 
-- subprocess timeout only kills the direct child, not necessarily a whole
-  process tree;
-- run-local ledgers lack cross-process locks;
+- subprocess timeout cleanup now owns the headless exec process group, but
+  foreground Ctrl-C still needs the same first-class cleanup path for active
+  participant calls;
 - user cancellation is not modeled as a first-class run state;
 - retention applies only to raw logs, not runs/blobs/worktrees;
 - no structured metrics export;
@@ -374,17 +374,16 @@ Recovery:
 
 Before public release:
 
-1. Run-local cross-process locks.
-2. Process-group cancellation and timeout cleanup.
-3. First-class canceled state.
-4. Adapter-specific default probes for auth/model/quota where safe commands
+1. Process-group cancellation for foreground Ctrl-C.
+2. First-class canceled state.
+3. Adapter-specific default probes for auth/model/quota where safe commands
    exist.
-5. Capability-aware routing.
-6. Artifact retention and redaction.
-7. Worktree prune workflow.
-8. Metrics derived from event logs.
-9. Redacted support bundle.
-10. Versioned config and artifact schema migrations.
+4. Capability-aware routing.
+5. Artifact retention and redaction.
+6. Worktree prune workflow.
+7. Metrics derived from event logs.
+8. Redacted support bundle.
+9. Versioned config and artifact schema migrations.
 
 ## Research references
 

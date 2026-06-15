@@ -586,11 +586,12 @@ Do these before adding more collaboration features:
 
 1. Add adapter command slots and capabilities while preserving current config
    compatibility.
-2. Change `doctor` from global availability to per-intent readiness.
-3. Add JSON sidecars for shared turns.
+2. Add safe adapter-specific default probes for auth, model, provider, and
+   quota readiness where each CLI exposes cheap diagnostics.
+3. Keep tightening JSON sidecars for shared turns.
 4. Validate sidecars before `/vote`, `/review`, executor selection, or apply.
-5. Replace process-local event locking with `fcntl.flock` on `run.lock`.
-6. Add process-group cancellation for headless calls.
+5. Keep run-local `fcntl.flock` coverage around every event/projection write.
+6. Finish process-group cancellation for foreground Ctrl-C.
 7. Normalize failure classes instead of relying on raw stderr strings.
 8. Improve UI labels: chat session, turn, optional round.
 9. Add `councli verify` to check events, sidecars, artifacts, and projections.
