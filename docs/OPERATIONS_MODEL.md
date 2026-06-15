@@ -180,19 +180,22 @@ Storage classes need separate retention:
 
 | Class | Default | Cleanup command |
 | --- | --- | --- |
-| raw tmux recordings | rotate by size/backups | `sessions stop/prune`, future `scrub` |
-| run artifacts | keep | future `runs prune` |
+| raw tmux recordings | rotate by size/backups | `sessions stop/prune`, `artifacts prune`, `artifacts scrub` |
+| run artifacts | keep | `artifacts scrub`; explicit `artifacts prune --class run` |
 | blobs | keep while referenced | future `runs gc` |
 | worktrees | keep after run | future `worktrees prune` |
-| session archives | keep | future `sessions prune --older-than` |
+| session archives | keep | `artifacts prune`, `artifacts scrub` |
 | SQLite index | rebuildable | future `index rebuild` |
 
-Target cleanup commands:
+Cleanup commands:
 
 ```text
-councli runs prune --older-than 30d --dry-run
+councli artifacts list
+councli artifacts scrub --dry-run
+councli artifacts scrub --write
+councli artifacts prune --older-than 30 --dry-run
+councli artifacts prune --older-than 30 --delete
 councli worktrees prune --status abandoned --dry-run
-councli artifacts scrub --secrets --dry-run
 councli index rebuild
 ```
 

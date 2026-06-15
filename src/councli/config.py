@@ -113,6 +113,51 @@ class ConsensusConfig(BaseModel):
     min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
 
 
+ARTIFACT_CLASSES = (
+    "raw-log",
+    "session-archive",
+    "session-snapshot",
+    "run",
+    "task",
+    "project-ledger",
+)
+
+
+class ArtifactConfig(BaseModel):
+    prune_default_classes: list[str] = Field(default_factory=lambda: ["raw-log", "session-archive", "session-snapshot"])
+    redact_patterns: list[str] = Field(
+        default_factory=lambda: [
+            r"sk-proj-[A-Za-z0-9_-]{20,}",
+            r"sk-[A-Za-z0-9_-]{20,}",
+            r"gh[pousr]_[A-Za-z0-9_]{20,}",
+            r"glpat-[A-Za-z0-9_-]{20,}",
+            r"xox[baprs]-[A-Za-z0-9-]{20,}",
+            r"AKIA[0-9A-Z]{16}",
+            r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s'\"]{8,}",
+        ]
+    )
+    redact_replacement: str = "[REDACTED]"
+    scrub_max_file_bytes: int = Field(default=10_000_000, ge=1024)
+
+    @field_validator("prune_default_classes")
+    @classmethod
+    def validate_prune_default_classes(cls, value: list[str]) -> list[str]:
+        invalid = sorted(set(value) - set(ARTIFACT_CLASSES))
+        if invalid:
+            raise ValueError(f"unknown artifact class(es): {', '.join(invalid)}")
+        return value
+
+    @field_validator("redact_patterns")
+    @classmethod
+    def validate_redact_patterns(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid redaction regex {pattern!r}: {exc}") from exc
+        return value
+
+
 class NativeConfig(BaseModel):
     tmux_socket: str = "councli"
     detach_key: str = "C-]"
@@ -138,6 +183,7 @@ class NativeConfig(BaseModel):
 class CouncliConfig(BaseModel):
     agents: dict[str, AgentConfig]
     consensus: ConsensusConfig = Field(default_factory=ConsensusConfig)
+    artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
     native: NativeConfig = Field(default_factory=NativeConfig)
 
 

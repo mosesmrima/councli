@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 import re
+import shutil
 import shlex
 import sys
 import time
@@ -37,6 +38,7 @@ from councli.agents import (
 )
 from councli.artifacts import new_run_dir, read_json, write_json, write_text
 from councli.config import (
+    ARTIFACT_CLASSES,
     ConfigTrustError,
     ProjectIdentityError,
     load_config as load_config_model,
@@ -78,9 +80,19 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 sessions_app = typer.Typer(help="Manage native tmux-backed agent sessions.")
+artifacts_app = typer.Typer(help="Inspect, redact, and prune local councli artifacts.")
 app.add_typer(sessions_app, name="sessions")
+app.add_typer(artifacts_app, name="artifacts")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+ARTIFACT_ROOTS = {
+    "raw-log": ("session-recordings",),
+    "session-archive": ("session-archives",),
+    "session-snapshot": ("session-snapshots",),
+    "run": ("runs",),
+    "task": ("tasks",),
+    "project-ledger": ("ledger",),
+}
 COUNCLI_MASCOT = r"""
      .----------------.
    .'  codex  claude  '.
@@ -89,6 +101,15 @@ COUNCLI_MASCOT = r"""
    '.      councli    .'
      '----------------'
 """.strip("\n")
+
+
+@dataclass(frozen=True)
+class ArtifactCandidate:
+    kind: str
+    path: Path
+    bytes: int
+    modified_at: datetime
+    is_dir: bool = False
 
 
 def print_mascot() -> None:
@@ -1106,6 +1127,249 @@ def session_archive_path(root: Path, session: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_session = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in session).strip("-") or "session"
     return root / ".councli" / "session-archives" / timestamp / f"{safe_session}.txt"
+
+
+@artifacts_app.command("list")
+def artifacts_list(
+    root: RootOpt = Path.cwd(),
+    artifact_class: Annotated[
+        list[str] | None,
+        typer.Option("--class", "-k", help="Artifact class to include. Repeat to choose multiple."),
+    ] = None,
+    older_than_days: Annotated[int | None, typer.Option("--older-than", help="Only show artifacts older than N days.")] = None,
+) -> None:
+    """List local councli artifact files and directories."""
+    config = load_config(root)
+    classes = normalize_artifact_classes(artifact_class, default=ARTIFACT_CLASSES)
+    candidates = filter_artifacts_by_age(
+        collect_artifact_files(root, classes=classes, max_file_bytes=None),
+        older_than_days=older_than_days,
+    )
+    if not candidates:
+        console.print("No matching artifacts.")
+        return
+    print_artifact_table("Councli artifacts", candidates)
+    console.print(f"[dim]Total:[/] {len(candidates)} artifact(s), {format_bytes(sum(candidate.bytes for candidate in candidates))}")
+    if older_than_days is not None:
+        console.print(f"[dim]Retention default classes:[/] {', '.join(config.artifacts.prune_default_classes)}")
+
+
+@artifacts_app.command("scrub")
+def artifacts_scrub(
+    root: RootOpt = Path.cwd(),
+    artifact_class: Annotated[
+        list[str] | None,
+        typer.Option("--class", "-k", help="Artifact class to include. Repeat to choose multiple."),
+    ] = None,
+    write: Annotated[bool, typer.Option("--write/--dry-run", help="Rewrite matching files in place. Defaults to dry-run.")] = False,
+) -> None:
+    """Redact common secret-looking tokens from local councli text artifacts."""
+    config = load_config(root)
+    classes = normalize_artifact_classes(artifact_class, default=ARTIFACT_CLASSES)
+    patterns = [re.compile(pattern) for pattern in config.artifacts.redact_patterns]
+    candidates = collect_artifact_files(root, classes=classes, max_file_bytes=config.artifacts.scrub_max_file_bytes)
+    changed: list[ArtifactCandidate] = []
+    total_matches = 0
+    skipped = 0
+    for candidate in candidates:
+        try:
+            original = candidate.path.read_bytes()
+        except OSError:
+            skipped += 1
+            continue
+        if b"\x00" in original:
+            skipped += 1
+            continue
+        try:
+            text = original.decode("utf-8")
+        except UnicodeDecodeError:
+            skipped += 1
+            continue
+        redacted, matches = redact_text(text, patterns=patterns, replacement=config.artifacts.redact_replacement)
+        if matches == 0:
+            continue
+        total_matches += matches
+        changed.append(candidate)
+        if write:
+            rewrite_text_preserve_mode(candidate.path, redacted)
+
+    if changed:
+        print_artifact_table("Artifacts to redact" if not write else "Redacted artifacts", changed)
+    action = "Redacted" if write else "Would redact"
+    console.print(f"[green]{action}:[/] {total_matches} match(es) in {len(changed)} file(s)")
+    if skipped:
+        console.print(f"[yellow]Skipped:[/] {skipped} binary, unreadable, or oversized file(s)")
+    if write and changed:
+        append_project_event(
+            root,
+            "artifacts.scrubbed",
+            payload={"files": len(changed), "matches": total_matches, "classes": classes},
+        )
+    elif changed:
+        console.print("[dim]Run again with --write to rewrite these files in place.[/]")
+
+
+@artifacts_app.command("prune")
+def artifacts_prune(
+    root: RootOpt = Path.cwd(),
+    older_than_days: Annotated[int, typer.Option("--older-than", help="Delete artifacts older than N days.")] = 30,
+    artifact_class: Annotated[
+        list[str] | None,
+        typer.Option("--class", "-k", help="Artifact class to prune. Repeat to choose multiple."),
+    ] = None,
+    delete: Annotated[bool, typer.Option("--delete/--dry-run", help="Actually remove matching artifacts. Defaults to dry-run.")] = False,
+) -> None:
+    """Prune old local councli artifacts. Destructive deletion requires --delete."""
+    config = load_config(root)
+    classes = normalize_artifact_classes(artifact_class, default=config.artifacts.prune_default_classes)
+    candidates = filter_artifacts_by_age(
+        collect_prune_targets(root, classes=classes),
+        older_than_days=older_than_days,
+    )
+    if not candidates:
+        console.print("No matching artifacts to prune.")
+        return
+    print_artifact_table("Artifacts to prune" if not delete else "Pruned artifacts", candidates)
+    if not delete:
+        console.print("[dim]Dry run only. Run again with --delete to remove these artifacts.[/]")
+        return
+    for candidate in candidates:
+        if candidate.is_dir:
+            shutil.rmtree(candidate.path)
+        else:
+            candidate.path.unlink()
+    append_project_event(
+        root,
+        "artifacts.pruned",
+        payload={
+            "files_or_directories": len(candidates),
+            "bytes": sum(candidate.bytes for candidate in candidates),
+            "classes": classes,
+            "older_than_days": older_than_days,
+        },
+    )
+    console.print(f"[green]Deleted:[/] {len(candidates)} artifact(s), {format_bytes(sum(candidate.bytes for candidate in candidates))}")
+
+
+def normalize_artifact_classes(values: list[str] | None, *, default: tuple[str, ...] | list[str]) -> list[str]:
+    selected = list(default if not values else values)
+    invalid = sorted(set(selected) - set(ARTIFACT_CLASSES))
+    if invalid:
+        console.print(f"[red]Unknown artifact class(es):[/] {', '.join(invalid)}")
+        console.print(f"Known classes: {', '.join(ARTIFACT_CLASSES)}")
+        raise typer.Exit(code=2)
+    return selected
+
+
+def artifact_root(root: Path, kind: str) -> Path:
+    return root / ".councli" / Path(*ARTIFACT_ROOTS[kind])
+
+
+def collect_artifact_files(root: Path, *, classes: list[str], max_file_bytes: int | None) -> list[ArtifactCandidate]:
+    candidates: list[ArtifactCandidate] = []
+    for kind in classes:
+        base = artifact_root(root, kind)
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if max_file_bytes is not None and size > max_file_bytes:
+                continue
+            candidates.append(artifact_candidate(kind, path))
+    return candidates
+
+
+def collect_prune_targets(root: Path, *, classes: list[str]) -> list[ArtifactCandidate]:
+    candidates: list[ArtifactCandidate] = []
+    directory_classes = {"run", "task"}
+    for kind in classes:
+        base = artifact_root(root, kind)
+        if not base.exists():
+            continue
+        if kind in directory_classes:
+            paths = sorted(base.iterdir())
+        else:
+            paths = sorted(path for path in base.rglob("*") if path.is_file())
+        for path in paths:
+            candidates.append(artifact_candidate(kind, path))
+    return candidates
+
+
+def artifact_candidate(kind: str, path: Path) -> ArtifactCandidate:
+    try:
+        stat = path.stat()
+        size = directory_size(path) if path.is_dir() else stat.st_size
+        modified_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+    except OSError:
+        size = 0
+        modified_at = datetime.fromtimestamp(0, timezone.utc)
+    return ArtifactCandidate(kind=kind, path=path, bytes=size, modified_at=modified_at, is_dir=path.is_dir())
+
+
+def directory_size(path: Path) -> int:
+    total = 0
+    for child in path.rglob("*"):
+        if not child.is_file():
+            continue
+        try:
+            total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def filter_artifacts_by_age(candidates: list[ArtifactCandidate], *, older_than_days: int | None) -> list[ArtifactCandidate]:
+    if older_than_days is None:
+        return candidates
+    cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    return [candidate for candidate in candidates if candidate.modified_at < cutoff]
+
+
+def redact_text(text: str, *, patterns: list[re.Pattern[str]], replacement: str) -> tuple[str, int]:
+    total = 0
+    value = text
+    for pattern in patterns:
+        value, count = pattern.subn(replacement, value)
+        total += count
+    return value, total
+
+
+def rewrite_text_preserve_mode(path: Path, content: str) -> None:
+    mode = path.stat().st_mode & 0o777
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{int(time.time() * 1000)}.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def print_artifact_table(title: str, candidates: list[ArtifactCandidate]) -> None:
+    table = Table(title=title, expand=False)
+    table.add_column("Class", no_wrap=True)
+    table.add_column("Size", no_wrap=True)
+    table.add_column("Modified", no_wrap=True)
+    table.add_column("Path")
+    for candidate in candidates:
+        table.add_row(
+            candidate.kind,
+            format_bytes(candidate.bytes),
+            candidate.modified_at.isoformat(timespec="seconds"),
+            str(candidate.path),
+        )
+    console.print(table)
+
+
+def format_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{size} B"
 
 
 @app.command()

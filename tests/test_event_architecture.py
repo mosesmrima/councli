@@ -1267,6 +1267,96 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertFalse(alpha["intents"]["vote"]["ready"])
             self.assertEqual(alpha["intents"]["vote"]["status"], "unsupported_intent")
 
+    def test_artifacts_scrub_and_prune_are_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            secret = "sk-proj-" + ("A" * 28)
+            github_token = "ghp_" + ("B" * 36)
+            raw_log = root / ".councli" / "session-recordings" / "alpha.raw.log"
+            raw_log.parent.mkdir(parents=True)
+            raw_log.write_text(f"token={secret}\n", encoding="utf-8")
+            raw_log.chmod(0o600)
+            run_dir = root / ".councli" / "runs" / "old-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "blackboard.md").write_text(f"github {github_token}\n", encoding="utf-8")
+
+            dry_scrub = subprocess.run(
+                [PYTHON, "-m", "councli", "artifacts", "scrub", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(dry_scrub.returncode, 0, dry_scrub.stdout + dry_scrub.stderr)
+            self.assertIn("Would redact", dry_scrub.stdout)
+            self.assertIn(secret, raw_log.read_text(encoding="utf-8"))
+
+            write_scrub = subprocess.run(
+                [PYTHON, "-m", "councli", "artifacts", "scrub", "-C", str(root), "--write"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(write_scrub.returncode, 0, write_scrub.stdout + write_scrub.stderr)
+            self.assertIn("Redacted", write_scrub.stdout)
+            self.assertNotIn(secret, raw_log.read_text(encoding="utf-8"))
+            self.assertNotIn(github_token, (run_dir / "blackboard.md").read_text(encoding="utf-8"))
+            self.assertEqual(raw_log.stat().st_mode & 0o077, 0)
+
+            archive = root / ".councli" / "session-archives" / "old" / "alpha.txt"
+            archive.parent.mkdir(parents=True)
+            archive.write_text("old archive\n", encoding="utf-8")
+            old_time = time.time() - 40 * 24 * 60 * 60
+            os.utime(archive, (old_time, old_time))
+
+            dry_prune = subprocess.run(
+                [
+                    PYTHON,
+                    "-m",
+                    "councli",
+                    "artifacts",
+                    "prune",
+                    "-C",
+                    str(root),
+                    "--older-than",
+                    "30",
+                    "--class",
+                    "session-archive",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(dry_prune.returncode, 0, dry_prune.stdout + dry_prune.stderr)
+            self.assertIn("Dry run", dry_prune.stdout)
+            self.assertTrue(archive.exists())
+
+            delete_prune = subprocess.run(
+                [
+                    PYTHON,
+                    "-m",
+                    "councli",
+                    "artifacts",
+                    "prune",
+                    "-C",
+                    str(root),
+                    "--older-than",
+                    "30",
+                    "--class",
+                    "session-archive",
+                    "--delete",
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(delete_prune.returncode, 0, delete_prune.stdout + delete_prune.stderr)
+            self.assertIn("Deleted", delete_prune.stdout)
+            self.assertFalse(archive.exists())
+
     def test_doctor_json_is_pure_json_on_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")

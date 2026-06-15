@@ -178,6 +178,15 @@ Native session settings:
 - `raw_log_backups`: number of rotated raw recordings to keep.
 - `session_prefix`: prefix for project-scoped tmux session names.
 
+Artifact hygiene settings:
+
+- `prune_default_classes`: artifact classes pruned by default, currently raw
+  logs, session archives, and session snapshots.
+- `redact_patterns`: regexes used by `councli artifacts scrub`.
+- `redact_replacement`: replacement text for scrubbed secrets.
+- `scrub_max_file_bytes`: skip larger files during scrub to avoid accidental
+  expensive rewrites.
+
 `councli` deliberately does not model each participant's native feature set.
 Slash commands, `@file` mention syntax, MCP configuration, plugins, goals, and
 tool-specific subagents remain native to Codex, Claude Code, AGY, Kimi, or
@@ -240,11 +249,19 @@ Run inspection commands:
 councli status
 councli show latest
 councli show <run-id-prefix> --blackboard
+councli artifacts list
+councli artifacts scrub --dry-run
+councli artifacts scrub --write
+councli artifacts prune --older-than 30 --dry-run
+councli artifacts prune --older-than 30 --delete
 ```
 
 `status` lists recent run ids with task, participants, decision, review, and
 implementation status when present. `show` reopens a run's durable state and
 prints the paths to its blackboard, machine state, event log, and artifacts.
+`artifacts scrub` redacts common secret-looking tokens from text artifacts and
+defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
+and snapshots by default, and only deletes when `--delete` is supplied.
 
 Interactive councli shell:
 
@@ -359,9 +376,8 @@ readiness. Hidden experimental worktree execution/review commands still exist
 for development, but they are not the MVP path. Next steps are:
 
 1. Add adapter-specific auth/quota probes where each CLI exposes safe commands.
-2. Add retention/redaction controls for local artifacts.
-3. Add a richer interactive TUI once the protocol proves useful.
-4. Decide whether to delete or separately package the hidden execution/review
+2. Add a richer interactive TUI once the protocol proves useful.
+3. Decide whether to delete or separately package the hidden execution/review
    prototype.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and
