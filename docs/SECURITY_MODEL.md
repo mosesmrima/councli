@@ -90,6 +90,9 @@ Current controls:
 
 - command-bearing fields are hashed and pinned in user-local state;
 - config changes require `councli trust`;
+- generated configs include `schema_version: councli.config.v1`;
+- `councli config check` and `councli config migrate` inspect and upgrade
+  legacy configs without changing trusted command fields;
 - project identity detects copied/moved `.councli/` directories;
 - tmux socket/session names and detach keys are validated;
 - argv arrays are used instead of shell-string command templates in the main
@@ -97,12 +100,9 @@ Current controls:
 
 Hardening:
 
-- add config schema version and migration;
 - make trust diffs inspectable before `councli trust`;
-- record the resolved binary path in the trust pin or detect path drift;
-- add `councli doctor --security`;
-- add adapter capability policy to prevent silent escalation from planning to
-  full-permission execution.
+- add optional sandbox wrapper policy;
+- add integration tests for hostile prompts and malicious configs.
 
 ### Command injection and shell interpretation
 

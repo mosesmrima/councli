@@ -27,7 +27,7 @@ from councli.cli import (
     shared_turn_runner,
     supports_native_session,
 )
-from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
+from councli.config import CONFIG_SCHEMA_VERSION, DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
 from councli.council import decide_council, decide_review, empty_review, empty_vote, next_executor, parse_review, run_blackboard_council
 from councli.events import EventLedger, read_events
 from councli.gitops import create_worktree, diff
@@ -2171,6 +2171,68 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(project_config_path(root).exists())
             self.assertIn("Created default councli config", proc.stdout + proc.stderr)
             self.assertIn("councli doctor", proc.stdout + proc.stderr)
+
+    def test_config_migrate_adds_schema_version_without_retrust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertNotIn("schema_version", raw)
+
+            before = subprocess.run(
+                [PYTHON, "-m", "councli", "config", "check", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(before.returncode, 0, before.stdout + before.stderr)
+            before_data = json.loads(before.stdout)
+            self.assertEqual(before_data["schema"]["status"], "legacy")
+            self.assertTrue(before_data["schema"]["migration_required"])
+
+            dry_run = subprocess.run(
+                [PYTHON, "-m", "councli", "config", "migrate", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(dry_run.returncode, 0, dry_run.stdout + dry_run.stderr)
+            self.assertNotIn("schema_version", yaml.safe_load(config_path.read_text(encoding="utf-8")))
+
+            migrated = subprocess.run(
+                [PYTHON, "-m", "councli", "config", "migrate", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(migrated.returncode, 0, migrated.stdout + migrated.stderr)
+            self.assertIn("No retrust is required", migrated.stdout)
+            after_raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(after_raw["schema_version"], CONFIG_SCHEMA_VERSION)
+
+            doctor = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+
+            after = subprocess.run(
+                [PYTHON, "-m", "councli", "config", "check", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+            after_data = json.loads(after.stdout)
+            self.assertEqual(after_data["schema"]["status"], "current")
+            self.assertEqual(after_data["validation"]["status"], "ok")
 
     def test_doctor_json_reports_intent_readiness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

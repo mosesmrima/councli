@@ -18,6 +18,8 @@ CONFIG_DIR = ".councli"
 CONFIG_FILE = "config.yaml"
 PROJECT_ID_FILE = "project.json"
 TRUST_FILE = "trust.json"
+CONFIG_SCHEMA_VERSION = "councli.config.v1"
+SUPPORTED_CONFIG_SCHEMA_VERSIONS = (CONFIG_SCHEMA_VERSION,)
 EXECUTABLE_AGENT_FIELDS = (
     "enabled",
     "backend",
@@ -230,6 +232,7 @@ class NativeConfig(BaseModel):
 
 
 class CouncliConfig(BaseModel):
+    schema_version: Literal["councli.config.v1"] = CONFIG_SCHEMA_VERSION
     agents: dict[str, AgentConfig]
     consensus: ConsensusConfig = Field(default_factory=ConsensusConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
@@ -415,6 +418,48 @@ def load_config(root: Path) -> CouncliConfig:
 
 def dump_yaml(data: Any) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
+
+
+def config_schema_status(raw: dict[str, Any]) -> dict[str, Any]:
+    value = raw.get("schema_version")
+    if value is None:
+        return {
+            "status": "legacy",
+            "schema_version": None,
+            "expected_schema_version": CONFIG_SCHEMA_VERSION,
+            "migration_required": True,
+            "reason": "missing schema_version",
+        }
+    if value == CONFIG_SCHEMA_VERSION:
+        return {
+            "status": "current",
+            "schema_version": value,
+            "expected_schema_version": CONFIG_SCHEMA_VERSION,
+            "migration_required": False,
+            "reason": "current",
+        }
+    return {
+        "status": "unsupported",
+        "schema_version": value,
+        "expected_schema_version": CONFIG_SCHEMA_VERSION,
+        "migration_required": False,
+        "reason": f"unsupported schema_version: {value!r}",
+    }
+
+
+def migrate_config_payload(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    status = config_schema_status(raw)
+    if status["status"] == "current":
+        return raw, False
+    if status["status"] == "legacy":
+        migrated = dict(raw)
+        migrated["schema_version"] = CONFIG_SCHEMA_VERSION
+        CouncliConfig.model_validate(migrated)
+        return migrated, True
+    raise ValueError(
+        f"Unsupported councli config schema_version {status['schema_version']!r}; "
+        f"expected {CONFIG_SCHEMA_VERSION!r}"
+    )
 
 
 def trust_project_config(

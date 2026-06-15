@@ -478,7 +478,8 @@ Treat the system as not production-grade until these gates pass:
 
 ## Suggested implementation sequence
 
-1. Fix docs and command-template inconsistencies.
+1. Fix docs and command-template inconsistencies. Config schema versioning and
+   `councli config check/migrate` are in place for legacy project configs.
 2. Add adapter capability metadata while preserving existing config fields.
 3. Add intent-specific readiness model and `doctor --json`.
 4. Add response sidecars for shared turns while retaining `COUNCLI_TRAILER` as

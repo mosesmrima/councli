@@ -43,11 +43,15 @@ from councli.agents import (
 from councli.artifacts import new_run_dir, read_json, write_json, write_text
 from councli.config import (
     ARTIFACT_CLASSES,
+    CONFIG_SCHEMA_VERSION,
     ConfigTrustError,
     CouncliConfig,
     ProjectIdentityError,
+    config_schema_status,
+    dump_yaml,
     executable_config_hash,
     load_config as load_config_model,
+    migrate_config_payload,
     project_config_path,
     project_trust_path,
     resolved_agent_binaries,
@@ -89,8 +93,10 @@ app = typer.Typer(
 )
 sessions_app = typer.Typer(help="Manage native tmux-backed agent sessions.")
 artifacts_app = typer.Typer(help="Inspect, redact, and prune local councli artifacts.")
+config_app = typer.Typer(help="Inspect and migrate project-local councli config.")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(artifacts_app, name="artifacts")
+app.add_typer(config_app, name="config")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 EXPERIMENTAL_ENV = "COUNCLI_EXPERIMENTAL"
@@ -244,6 +250,97 @@ def trust(
     console.print(f"Hash: {digest}")
     if gitignore is not None:
         console.print(f"[green]Protected local artifacts:[/] {gitignore}")
+
+
+@config_app.command("check")
+def config_check(
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable config status JSON.")] = False,
+) -> None:
+    """Check config schema version and validation without running agent commands."""
+    try:
+        report = build_config_report(root)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    if json_output:
+        console.print_json(data=report)
+        return
+    print_config_report(report)
+
+
+@config_app.command("migrate")
+def config_migrate(
+    root: RootOpt = Path.cwd(),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show migration result without rewriting config.")] = False,
+) -> None:
+    """Migrate a legacy project config to the current schema version."""
+    try:
+        raw = read_config_raw(root)
+        migrated, changed = migrate_config_payload(raw)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    path = project_config_path(root)
+    if not changed:
+        console.print(f"[green]Config already current:[/] {path}")
+        console.print(f"Schema: {CONFIG_SCHEMA_VERSION}")
+        return
+    if dry_run:
+        console.print(f"[cyan]Would migrate:[/] {path}")
+        console.print(f"Schema: {CONFIG_SCHEMA_VERSION}")
+        return
+    path.write_text(dump_yaml(migrated), encoding="utf-8")
+    console.print(f"[green]Migrated config:[/] {path}")
+    console.print(f"Schema: {CONFIG_SCHEMA_VERSION}")
+    console.print("[dim]No retrust is required for schema-version-only migration.[/]")
+
+
+def read_config_raw(root: Path) -> dict[str, Any]:
+    path = project_config_path(root)
+    if not path.exists():
+        raise FileNotFoundError(f"No councli config at {path}. Run: councli init")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid config at {path}: expected a YAML mapping")
+    return raw
+
+
+def build_config_report(root: Path) -> dict[str, Any]:
+    path = project_config_path(root)
+    raw = read_config_raw(root)
+    schema = config_schema_status(raw)
+    validation: dict[str, Any] = {"status": "ok", "error": None}
+    try:
+        CouncliConfig.model_validate(raw)
+    except Exception as exc:
+        validation = {"status": "invalid", "error": str(exc)}
+    return {
+        "schema_version": "councli.config.report.v1",
+        "config": str(path),
+        "expected_schema_version": CONFIG_SCHEMA_VERSION,
+        "schema": schema,
+        "validation": validation,
+        "executable_hash": executable_config_hash(raw),
+    }
+
+
+def print_config_report(report: dict[str, Any]) -> None:
+    schema = report["schema"]
+    validation = report["validation"]
+    schema_style = "green" if schema["status"] == "current" else "yellow"
+    if schema["status"] == "unsupported":
+        schema_style = "red"
+    validation_style = "green" if validation["status"] == "ok" else "red"
+    console.print("[bold]councli config[/]")
+    console.print(f"Config: {report['config']}")
+    console.print(f"Schema: [{schema_style}]{schema['status']}[/] ({schema.get('schema_version') or 'missing'})")
+    console.print(f"Expected: {report['expected_schema_version']}")
+    console.print(f"Validation: [{validation_style}]{validation['status']}[/]")
+    if validation.get("error"):
+        console.print(f"[red]{validation['error']}[/]")
+    if schema.get("migration_required"):
+        console.print("[dim]Run `councli config migrate` to add the current schema_version.[/]")
 
 
 @app.command()

@@ -142,6 +142,12 @@ or if an installed assistant binary changes, review the file and run
 intentionally moved or renamed, run `councli trust --repair-identity` after
 reviewing the config.
 
+Project-level fields include:
+
+- `schema_version`: current config schema marker, currently
+  `councli.config.v1`. Use `councli config check` and
+  `councli config migrate` to inspect or upgrade legacy configs.
+
 Each agent has:
 
 - `enabled`: whether to consider it.
