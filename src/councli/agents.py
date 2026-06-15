@@ -4,6 +4,7 @@ import shutil
 import shlex
 import signal
 import subprocess
+import threading
 import time
 import uuid
 import os
@@ -42,6 +43,8 @@ QUOTA_ERROR_MARKERS = (
     "billing",
     "subscription",
 )
+_ACTIVE_PROCESS_LOCK = threading.Lock()
+_ACTIVE_PROCESSES: dict[int, subprocess.Popen[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -236,7 +239,11 @@ class AgentRunner:
                 stderr=subprocess.PIPE,
                 start_new_session=True,
             )
-            stdout, stderr = proc.communicate(timeout=self.config.timeout_seconds)
+            register_active_process(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=self.config.timeout_seconds)
+            finally:
+                unregister_active_process(proc)
         except subprocess.TimeoutExpired:
             if proc is not None:
                 terminate_process_group(proc)
@@ -270,7 +277,13 @@ class AgentRunner:
         output = (stdout or "").strip()
         error = (stderr or "").strip()
         ok = proc.returncode == 0
-        failure_class = "" if ok else classify_agent_failure(error or output)
+        if ok:
+            failure_class = ""
+        elif proc.returncode in {-signal.SIGTERM, -signal.SIGKILL}:
+            failure_class = "canceled"
+            error = error or "canceled by councli"
+        else:
+            failure_class = classify_agent_failure(error or output)
         if not ok and failure_class == "auth_required":
             error = f"agent unavailable or unauthenticated: {error or output}"
 
@@ -417,18 +430,43 @@ def classify_agent_failure(text: str) -> str:
 
 
 def terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    terminate_process_groups([proc])
+
+
+def terminate_process_groups(procs: list[subprocess.Popen[str]], *, grace_seconds: float = 2.0) -> None:
+    live = [proc for proc in procs if proc.poll() is None]
+    for proc in live:
+        signal_process_group(proc, signal.SIGTERM)
+    deadline = time.monotonic() + grace_seconds
+    while any(proc.poll() is None for proc in live) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    for proc in live:
+        if proc.poll() is None:
+            signal_process_group(proc, signal.SIGKILL)
+
+
+def signal_process_group(proc: subprocess.Popen[str], sig: signal.Signals) -> None:
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(proc.pid, sig)
     except ProcessLookupError:
         return
-    deadline = time.monotonic() + 2.0
-    while proc.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+
+
+def register_active_process(proc: subprocess.Popen[str]) -> None:
+    with _ACTIVE_PROCESS_LOCK:
+        _ACTIVE_PROCESSES[proc.pid] = proc
+
+
+def unregister_active_process(proc: subprocess.Popen[str]) -> None:
+    with _ACTIVE_PROCESS_LOCK:
+        _ACTIVE_PROCESSES.pop(proc.pid, None)
+
+
+def cancel_active_agent_processes() -> int:
+    with _ACTIVE_PROCESS_LOCK:
+        procs = list(_ACTIVE_PROCESSES.values())
+    terminate_process_groups(procs)
+    return len(procs)
 
 
 def build_runners(agent_configs: dict[str, AgentConfig]) -> dict[str, AgentRunner]:

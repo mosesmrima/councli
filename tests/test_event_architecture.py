@@ -7,13 +7,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 
 import yaml
 
-from councli.agents import AgentRunResult, AgentRunner
+from councli.agents import AgentRunResult, AgentRunner, cancel_active_agent_processes
 from councli.cli import (
     broadcast_runner,
     decide_shared_vote,
@@ -299,6 +300,59 @@ class EventArchitectureTests(unittest.TestCase):
             while process_is_active(child_pid) and time.monotonic() < deadline:
                 time.sleep(0.05)
             self.assertFalse(process_is_active(child_pid), f"child process {child_pid} survived timeout cleanup")
+
+    def test_cancel_active_agent_processes_terminates_child_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_file = root / "child.pid"
+            script = root / "spawn_child.py"
+            script.write_text(
+                "\n".join(
+                    [
+                        "import pathlib, subprocess, sys, time",
+                        "pid_file = pathlib.Path(sys.argv[1])",
+                        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+                        "pid_file.write_text(str(child.pid), encoding='utf-8')",
+                        "time.sleep(60)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            runner = AgentRunner(
+                "slow",
+                AgentConfig(
+                    backend="exec",
+                    binary=PYTHON,
+                    command=[PYTHON, str(script), str(pid_file)],
+                    timeout_seconds=60,
+                ),
+            )
+            result_holder: dict[str, AgentRunResult] = {}
+
+            def run_agent() -> None:
+                result_holder["result"] = runner.run("ignored", cwd=root)
+
+            thread = threading.Thread(target=run_agent)
+            thread.start()
+            deadline = time.monotonic() + 5
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(pid_file.exists())
+
+            stopped = cancel_active_agent_processes()
+
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+            self.assertGreaterEqual(stopped, 1)
+            result = result_holder["result"]
+            self.assertFalse(result.ok)
+            self.assertEqual(result.failure_class, "canceled")
+            child_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            deadline = time.monotonic() + 5
+            while process_is_active(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(process_is_active(child_pid), f"child process {child_pid} survived cancellation cleanup")
 
     def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

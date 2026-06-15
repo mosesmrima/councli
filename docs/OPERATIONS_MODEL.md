@@ -29,10 +29,9 @@ Implemented today:
 
 Operational gaps:
 
-- subprocess timeout cleanup now owns the headless exec process group, but
-  foreground Ctrl-C still needs the same first-class cleanup path for active
-  participant calls;
-- user cancellation is not modeled as a first-class run state;
+- foreground Ctrl-C cleanup now terminates active headless agent process
+  groups, but cancellation state is still only partially modeled across all
+  commands;
 - retention applies only to raw logs, not runs/blobs/worktrees;
 - no structured metrics export;
 - no budget model for cost, latency, output bytes, or disk usage;
@@ -143,7 +142,9 @@ questions after failure:
 ## Cancellation model
 
 Current behavior: `KeyboardInterrupt` exits the interactive shell or current
-foreground operation, but run cancellation is not consistently recorded.
+foreground operation. Shared turns record `turn.canceled` and terminate active
+headless agent process groups, but cancellation is not consistently modeled
+across every command.
 
 Target behavior:
 
@@ -374,16 +375,15 @@ Recovery:
 
 Before public release:
 
-1. Process-group cancellation for foreground Ctrl-C.
-2. First-class canceled state.
-3. Adapter-specific default probes for auth/model/quota where safe commands
+1. First-class canceled state across all foreground commands.
+2. Adapter-specific default probes for auth/model/quota where safe commands
    exist.
-4. Capability-aware routing.
-5. Artifact retention and redaction.
-6. Worktree prune workflow.
-7. Metrics derived from event logs.
-8. Redacted support bundle.
-9. Versioned config and artifact schema migrations.
+3. Capability-aware routing.
+4. Artifact retention and redaction.
+5. Worktree prune workflow.
+6. Metrics derived from event logs.
+7. Redacted support bundle.
+8. Versioned config and artifact schema migrations.
 
 ## Research references
 

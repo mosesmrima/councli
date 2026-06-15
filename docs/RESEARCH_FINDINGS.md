@@ -81,9 +81,9 @@ The implementation is still MVP-grade in several places:
 - The blackboard renderer still privileges legacy phases.
 - Failure classification is mostly stderr text heuristics.
 - `broadcast_read_only` is a boolean rather than a command capability model.
-- Headless exec timeout cleanup uses process groups; foreground Ctrl-C
-  cancellation still needs first-class process-group cleanup for active
-  participant calls.
+- Headless exec timeout and foreground Ctrl-C cleanup terminate active agent
+  process groups; cancellation state still needs to be made consistent across
+  all commands.
 
 ## Non-negotiable architecture invariants
 
@@ -461,7 +461,8 @@ Treat the system as not production-grade until these gates pass:
 7. Run event writes use cross-process `fcntl.flock`.
 8. `councli verify` and `runs recover` can rebuild projections and detect missing
    refs.
-9. Ctrl-C records cancellation and terminates participant process groups.
+9. Ctrl-C consistently records cancellation across commands and terminates
+   participant process groups.
 10. tmux sessions in the wrong cwd are live but not ready.
 11. Retention/redaction controls exist for raw logs and artifacts.
 12. Integration tests cover each supported assistant command template with fake
@@ -479,7 +480,7 @@ Treat the system as not production-grade until these gates pass:
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add binary version/hash trust drift checks.
-9. Finish process-group cancellation for Ctrl-C and active headless calls.
+9. Finish consistent canceled-state recording for all foreground commands.
 10. Add `councli verify`, `runs recover`, and bounded context packing.
 11. Add retention/redaction and optional metrics export.
 12. Add SQLite WAL index only after the artifact protocol is stable.

@@ -592,7 +592,7 @@ Do these before adding more collaboration features:
 4. Extend sidecar validation from `/vote` to `/review`, executor selection,
    and apply.
 5. Keep run-local `fcntl.flock` coverage around every event/projection write.
-6. Finish process-group cancellation for foreground Ctrl-C.
+6. Make canceled-state recording consistent across all foreground commands.
 7. Normalize failure classes instead of relying on raw stderr strings.
 8. Improve UI labels: chat session, turn, optional round.
 9. Add `councli verify` to check events, sidecars, artifacts, and projections.

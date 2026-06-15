@@ -359,7 +359,6 @@ Not yet acceptable for shared/team/production use:
 
 - no structured secret redaction;
 - no adapter capability policy;
-- no foreground Ctrl-C process-group cleanup for active participant calls;
 - no binary version/hash drift detection;
 - no stable security audit report;
 - no sandbox wrapper policy;
@@ -376,8 +375,7 @@ Not yet acceptable for shared/team/production use:
 4. Add run-local locks and response sidecars so malformed output cannot corrupt
    machine state.
 5. Add secret redaction and retention controls.
-6. Extend process-group termination from timeout cleanup to foreground
-   cancellation.
+6. Make cancellation events consistent across all foreground commands.
 7. Add `councli scrub` and redacted export.
 8. Add optional sandbox wrappers.
 9. Add integration tests for hostile prompts and malicious configs.

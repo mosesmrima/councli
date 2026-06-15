@@ -22,6 +22,7 @@ from councli.agents import (
     AgentRunner,
     attach_tmux_session,
     build_runners,
+    cancel_active_agent_processes,
     capture_tmux,
     compact_terminal_prompt,
     ensure_tmux_session,
@@ -2097,22 +2098,30 @@ def run_turn_round(
         for name in runners:
             console.print(f"[cyan]{phase}:{name} start[/]")
         pending = set(futures)
-        while pending:
-            done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
-            now = time.monotonic()
-            for future in done:
-                name = futures[future]
-                try:
-                    results[name] = future.result()
-                except Exception as exc:  # pragma: no cover - adapter guard
-                    results[name] = runner_unavailable_result(name, str(exc))
-                print_participant_status(phase, name, results[name])
+        try:
+            while pending:
+                done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                now = time.monotonic()
+                for future in done:
+                    name = futures[future]
+                    try:
+                        results[name] = future.result()
+                    except Exception as exc:  # pragma: no cover - adapter guard
+                        results[name] = runner_unavailable_result(name, str(exc))
+                    print_participant_status(phase, name, results[name])
+                for future in pending:
+                    name = futures[future]
+                    elapsed = int(now - start_times[name])
+                    if elapsed >= next_notice[name]:
+                        console.print(f"[cyan]{phase}:{name} working {elapsed}s[/]")
+                        next_notice[name] += 10
+        except KeyboardInterrupt:
+            stopped = cancel_active_agent_processes()
             for future in pending:
-                name = futures[future]
-                elapsed = int(now - start_times[name])
-                if elapsed >= next_notice[name]:
-                    console.print(f"[cyan]{phase}:{name} working {elapsed}s[/]")
-                    next_notice[name] += 10
+                future.cancel()
+            if stopped:
+                console.print(f"[yellow]{phase}: canceled {stopped} active agent process group(s)[/]")
+            raise
     return results
 
 
