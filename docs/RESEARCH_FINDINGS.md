@@ -456,8 +456,8 @@ Treat the system as not production-grade until these gates pass:
 
 1. `doctor --json` reports readiness per intent.
 2. Adapter manifests or config fields declare command capabilities.
-3. Full-permission broadcast commands are rejected unless explicit
-   fallback is configured.
+3. Full-permission commands are rejected for read-only shared turns and
+   broadcast unless explicit fallback is configured.
 4. Binary path and executable hash drift after trust are detected; trust pins
    record stable version metadata.
 5. Keep expanding participant response and decision-artifact validation beyond

@@ -156,6 +156,9 @@ Each agent has:
   legacy configs infer read-only behavior from `broadcast_read_only`.
 - `start_capabilities` / `resume_capabilities`: capabilities for native tmux
   start/resume commands.
+- `read_only_policy`: `safe_only` by default for `chat`, `deliberate`, `vote`,
+  and synthesis. Set `allow_full_permission` only when unsafe shared-turn
+  routing is intentional.
 - `broadcast_policy`: `safe_only` by default. Set `allow_full_permission` only
   when an unsafe broadcast fallback is intentional.
 - `version_command`: optional lightweight version probe command.

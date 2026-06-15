@@ -28,6 +28,7 @@ EXECUTABLE_AGENT_FIELDS = (
     "broadcast_capabilities",
     "start_capabilities",
     "resume_capabilities",
+    "read_only_policy",
     "broadcast_policy",
     "version_command",
     "readiness_command",
@@ -97,6 +98,7 @@ class AgentConfig(BaseModel):
     resume_capabilities: list[str] = Field(
         default_factory=lambda: ["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"]
     )
+    read_only_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
     broadcast_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
     version_command: list[str] | None = None
     readiness_command: list[str] | None = None

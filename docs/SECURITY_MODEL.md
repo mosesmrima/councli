@@ -247,6 +247,7 @@ be driven by capabilities and explicit fallback policy:
 command_capabilities: ["reads_workspace", "runs_tools"]
 broadcast_capabilities: ["planning_only", "reads_workspace"]
 start_capabilities: ["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"]
+read_only_policy: safe_only
 broadcast_policy: safe_only
 ```
 

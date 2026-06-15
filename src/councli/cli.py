@@ -94,6 +94,7 @@ DECISION_SCHEMA_VERSION = "councli.decision.v1"
 VOTE_SCHEMA_VERSION = "councli.vote.v1"
 REVIEW_SCHEMA_VERSION = "councli.review.v1"
 READ_ONLY_DENIED_COMMAND_CAPABILITIES = {"writes_workspace", "full_permission"}
+READ_ONLY_INTENTS = {"chat", "deliberate", "vote", "synthesis"}
 ARTIFACT_ROOTS = {
     "raw-log": ("session-recordings",),
     "session-archive": ("session-archives",),
@@ -273,6 +274,8 @@ def doctor(
                 "native_start": command_capabilities_for(runner, "native_start"),
                 "native_resume": command_capabilities_for(runner, "native_resume"),
             },
+            "read_only_policy": runner.config.read_only_policy,
+            "broadcast_policy": runner.config.broadcast_policy,
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,
@@ -306,11 +309,26 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
     shared_supported = any("{prompt}" in part for part in shared_command)
     broadcast_supported = bool(runner.config.broadcast_enabled and shared_supported)
     assistant_supported = bool(runner.config.start_command or runner.config.backend == "tmux")
+    chat_policy = command_policy_for_intent(runner, "chat")
+    deliberate_policy = command_policy_for_intent(runner, "deliberate")
+    vote_policy = command_policy_for_intent(runner, "vote")
     broadcast_policy = command_policy_for_intent(runner, "broadcast")
     return {
-        "chat": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "chat")),
-        "deliberate": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "deliberate")),
-        "vote": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "vote")),
+        "chat": intent_readiness(
+            health,
+            supported=shared_supported and adapter_supports_intent(runner, "chat"),
+            policy=chat_policy,
+        ),
+        "deliberate": intent_readiness(
+            health,
+            supported=shared_supported and adapter_supports_intent(runner, "deliberate"),
+            policy=deliberate_policy,
+        ),
+        "vote": intent_readiness(
+            health,
+            supported=shared_supported and adapter_supports_intent(runner, "vote"),
+            policy=vote_policy,
+        ),
         "broadcast": intent_readiness(
             health,
             supported=broadcast_supported and adapter_supports_intent(runner, "broadcast"),
@@ -345,15 +363,22 @@ def stable_capabilities(capabilities: list[str]) -> list[str]:
 
 
 def command_policy_for_intent(runner: AgentRunner, intent: str) -> tuple[bool, str, str]:
-    if intent != "broadcast":
+    if intent == "broadcast":
+        capabilities = set(command_capabilities_for(runner, "broadcast"))
+        policy = runner.config.broadcast_policy
+        label = "broadcast command"
+    elif intent in READ_ONLY_INTENTS:
+        capabilities = set(command_capabilities_for(runner, "broadcast"))
+        policy = runner.config.read_only_policy
+        label = f"{intent} command"
+    else:
         return True, "ready", ""
-    capabilities = set(command_capabilities_for(runner, "broadcast"))
     denied = sorted(capabilities & READ_ONLY_DENIED_COMMAND_CAPABILITIES)
-    if denied and runner.config.broadcast_policy != "allow_full_permission":
+    if denied and policy != "allow_full_permission":
         return (
             False,
             "policy_denied",
-            "broadcast command capabilities exceed safe policy: " + ", ".join(denied),
+            f"{label} capabilities exceed safe policy: " + ", ".join(denied),
         )
     return True, "ready", ""
 
@@ -1817,7 +1842,10 @@ def broadcast_runner(runner: AgentRunner) -> AgentRunner:
     )
 
 
-def shared_turn_runner(runner: AgentRunner) -> AgentRunner:
+def shared_turn_runner(runner: AgentRunner, *, intent_name: str = "chat") -> AgentRunner:
+    policy_ok, policy_status, policy_reason = command_policy_for_intent(runner, intent_name)
+    if not policy_ok:
+        raise ValueError(f"{runner.name} {policy_status}: {policy_reason}")
     command = runner.config.broadcast_command or runner.config.command
     if not any("{prompt}" in part for part in command):
         raise ValueError(f"{runner.name} has no prompt-capable command")
@@ -1929,6 +1957,8 @@ def build_participants_artifact(
                 "native_start": command_capabilities_for(runner, "native_start"),
                 "native_resume": command_capabilities_for(runner, "native_resume"),
             },
+            "read_only_policy": runner.config.read_only_policy,
+            "broadcast_policy": runner.config.broadcast_policy,
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,
@@ -2036,7 +2066,7 @@ def run_shared_turn(
             degraded[name] = runner_unavailable_result(name, health.reason)
             continue
         try:
-            runnable[name] = shared_turn_runner(runner)
+            runnable[name] = shared_turn_runner(runner, intent_name=intent.name)
         except ValueError as exc:
             degraded[name] = runner_unavailable_result(name, str(exc))
     ledger.render()
@@ -2641,7 +2671,7 @@ def synthesize_shared_turn(
 
     synthesizer_name = ok_names[0]
     try:
-        synthesizer = shared_turn_runner(runners[synthesizer_name])
+        synthesizer = shared_turn_runner(runners[synthesizer_name], intent_name="synthesis")
     except ValueError:
         fallback = local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
         write_synthesis_artifact(

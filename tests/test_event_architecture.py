@@ -22,6 +22,7 @@ from councli.cli import (
     native_session_runner,
     parse_turn_trailer,
     render_peer_context,
+    shared_turn_runner,
     supports_native_session,
 )
 from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
@@ -629,6 +630,25 @@ class EventArchitectureTests(unittest.TestCase):
             unsafe_fallback.config.model_copy(update={"broadcast_policy": "allow_full_permission"}),
         )
         self.assertEqual(broadcast_runner(explicit_policy).config.command, explicit_policy.config.command)
+
+    def test_shared_turn_runner_denies_unsafe_read_only_command_by_default(self) -> None:
+        unsafe = AgentRunner(
+            "unsafe",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('could edit')", "{prompt}"],
+                command_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "full_permission"],
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "policy_denied"):
+            shared_turn_runner(unsafe, intent_name="chat")
+
+        explicit_policy = AgentRunner(
+            "explicit",
+            unsafe.config.model_copy(update={"read_only_policy": "allow_full_permission"}),
+        )
+        self.assertEqual(shared_turn_runner(explicit_policy, intent_name="chat").config.command, explicit_policy.config.command)
 
     def test_review_parser_and_decision_helpers(self) -> None:
         def valid_review(verdict: str, *, confidence: float = 0.9, concerns: list[str] | None = None) -> dict:
@@ -1967,6 +1987,9 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             data = json.loads(proc.stdout)
             alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertEqual(alpha["read_only_policy"], "safe_only")
+            self.assertFalse(alpha["intents"]["chat"]["ready"])
+            self.assertEqual(alpha["intents"]["chat"]["status"], "policy_denied")
             self.assertFalse(alpha["intents"]["broadcast"]["ready"])
             self.assertEqual(alpha["intents"]["broadcast"]["status"], "policy_denied")
             self.assertIn("full_permission", alpha["command_capabilities"]["broadcast"])

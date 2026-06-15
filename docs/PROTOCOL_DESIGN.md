@@ -459,9 +459,11 @@ commands:
 
 Routing then becomes policy-based:
 
-- normal chat may use `reads_workspace`;
+- normal chat, deliberation, vote, and synthesis may use `reads_workspace`;
+  `writes_workspace` or `full_permission` require explicit `read_only_policy`
+  fallback;
 - `/broadcast` may prefer `planning_only` but can use higher-permission commands
-  if the user config allows fallback;
+  only if the user config allows `broadcast_policy` fallback;
 - implementation requires `writes_workspace` and runs only in a worktree;
 - review may use `reads_workspace` and `runs_tools`, but not current-worktree
   writes unless explicit.
