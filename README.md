@@ -1,7 +1,8 @@
 # councli
 
 `councli` is a small local utility for hosting multiple coding CLI assistants,
-recording their activity, and making them deliberate before work is accepted.
+recording their activity, and letting them collaborate through a shared
+blackboard while preserving their native CLI harnesses.
 
 The first version is intentionally simple:
 
@@ -13,12 +14,15 @@ The first version is intentionally simple:
 - Raw terminal recording rotation and `.councli/` gitignore protection.
 - Modular agent adapters through YAML config.
 - Graceful degradation when an agent is missing or not authenticated.
-- Shared conversation turns by default, with explicit `/deliberate`, `/vote`,
-  and `/legacy-council` commands for stronger coordination.
+- Shared conversation turns by default, with explicit `/deliberate` and `/vote`
+  commands for stronger coordination.
+- Packet-file prompts, response sidecars, run-local locks, and blackboard
+  projections for inspectable collaboration.
 - Native attach mode: use each assistant's own TUI without `councli`
   intercepting slash commands or permission prompts.
 - Read-only broadcast mode for comparing answers across assistants.
-- Optional worktree execution, peer review, revision, and executor replacement.
+- Experimental worktree execution remains hidden while the shared council
+  protocol is hardened.
 
 For the consolidated research findings and implementation handoff, see
 [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) first; it is the
@@ -114,7 +118,6 @@ councli setup
 councli chat
 councli init --disable-missing
 councli trust
-councli reason "Compare approaches for adding password reset"
 councli sessions attach codex
 councli sessions import codex
 councli sessions resume codex
@@ -122,7 +125,6 @@ councli broadcast "Compare the API design"
 councli brief "Context to share with assistants"
 councli status
 councli show latest
-councli apply latest --dry-run
 ```
 
 ## Config
@@ -272,12 +274,11 @@ Use explicit commands when you want stronger coordination:
 - `/deliberate <prompt>` asks participants to respond independently, then gives
   them a peer-aware second round before synthesis.
 - `/vote <prompt>` asks for explicit votes and records a decision artifact.
-- `/legacy-council <prompt>` runs the older fixed orient/propose/critique/revise/vote flow.
 - `/assistant <name>` attaches to a native assistant session.
 
 Local shell commands are `/help`, `/doctor`, `/status`, `/show`, `/sessions`,
 `/assistant <name>`, `/broadcast <prompt>`, `/brief [task]`, `/deliberate
-<task>`, `/vote <task>`, `/legacy-council <task>`, and `/quit`. Unknown `/`
+<task>`, `/vote <task>`, and `/quit`. Unknown `/`
 commands are rejected explicitly. To send a task that literally starts with `/`,
 prefix it as `//task`.
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
+import os
 import re
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from councli.artifacts import to_jsonable, write_json, write_text
 
@@ -28,11 +31,22 @@ class EventLedger:
         self.run_dir = run_dir
         self.run_id = run_id or run_dir.name
         self.events_path = run_dir / "events.jsonl"
+        self.lock_path = run_dir / "run.lock"
         self.blobs_dir = run_dir / "blobs"
         self.packets_dir = run_dir / "packets"
         self.events_path.parent.mkdir(parents=True, exist_ok=True)
+        self.lock_path.touch(exist_ok=True)
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
         self.packets_dir.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        with self.lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def append(
         self,
@@ -45,7 +59,7 @@ class EventLedger:
         refs: dict[str, Any] | None = None,
         parent_event_ids: list[str] | None = None,
     ) -> EventRef:
-        with _LOCK:
+        with _LOCK, self._exclusive_lock():
             seq = self._next_seq()
             event_id = f"evt_{seq:06d}"
             event = {
@@ -63,24 +77,27 @@ class EventLedger:
             }
             with self.events_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(to_jsonable(event), sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
             return EventRef(seq=seq, event_id=event_id)
 
     def write_blob(self, kind: str, name: str, content: str, *, suffix: str = "md") -> str:
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-        safe_name = safe_slug(name)[:80] or "blob"
-        path = self.blobs_dir / kind / f"{digest}-{safe_name}.{suffix}"
-        write_text(path, content)
-        return path.relative_to(self.run_dir).as_posix()
+        with _LOCK, self._exclusive_lock():
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+            safe_name = safe_slug(name)[:80] or "blob"
+            path = self.blobs_dir / kind / f"{digest}-{safe_name}.{suffix}"
+            write_text(path, content)
+            return path.relative_to(self.run_dir).as_posix()
 
     def write_packet(self, participant: str, phase: str, content: str) -> Path:
-        with _LOCK:
-            seq = self._next_seq()
+        with _LOCK, self._exclusive_lock():
+            seq = sum(1 for _ in self.packets_dir.rglob("*.md"))
             path = self.packets_dir / participant / f"{seq:06d}-{safe_slug(phase)}.md"
             write_text(path, content)
             return path
 
     def render(self) -> None:
-        with _LOCK:
+        with _LOCK, self._exclusive_lock():
             events = _read_events_unlocked(self.run_dir)
             state = project_state(self.run_dir, events)
             write_json(self.run_dir / "state.json", state)
@@ -142,10 +159,12 @@ def project_state(run_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]
         elif event_type == "response.received" and participant and phase:
             content = read_ref(run_dir, refs.get("content"))
             error = read_ref(run_dir, refs.get("error"))
+            sidecar = read_json_ref(run_dir, refs.get("sidecar"))
             state["phases"].setdefault(phase, {})[participant] = {
                 "status": status,
                 "content": content,
                 "error": error,
+                "sidecar": sidecar,
                 "event_id": event.get("event_id"),
                 "refs": refs,
             }
@@ -226,14 +245,9 @@ def render_blackboard(state: dict[str, Any]) -> str:
     lines.append("")
 
     phases = state.get("phases") or {}
-    known_phases = ["orient", "propose", "critique", "revise", "vote", "review", "broadcast"]
-    extra_phases = sorted(phase for phase in phases if phase not in known_phases)
-    for phase in [*known_phases, *extra_phases]:
-        lines.extend([f"## {phase.title()}", ""])
+    for phase in sorted(phases, key=phase_sort_key):
+        lines.extend([f"## {format_phase_title(phase)}", ""])
         phase_items = phases.get(phase) or {}
-        if not phase_items:
-            lines.extend(["(none)", ""])
-            continue
         for participant, item in phase_items.items():
             status = item.get("status") or "unknown"
             lines.extend([f"### {participant} ({status})", ""])
@@ -317,6 +331,33 @@ def read_ref(run_dir: Path, ref: Any) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def read_json_ref(run_dir: Path, ref: Any) -> dict[str, Any] | None:
+    if not ref:
+        return None
+    path = run_dir / str(ref)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def phase_sort_key(phase: str) -> tuple[int, str]:
+    match = re.match(r"^([a-z_]+)\.round([0-9]+)$", phase)
+    if match:
+        return (int(match.group(2)), match.group(1))
+    if phase.startswith("synthesis"):
+        return (10_000, phase)
+    return (5_000, phase)
+
+
+def format_phase_title(phase: str) -> str:
+    match = re.match(r"^([a-z_]+)\.round([0-9]+)$", phase)
+    if match:
+        return f"{match.group(1).replace('_', ' ').title()} Round {match.group(2)}"
+    return phase.replace("_", " ").replace(".", " ").title()
 
 
 def safe_slug(value: str) -> str:

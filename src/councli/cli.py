@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -35,7 +35,7 @@ from councli.agents import (
     tmux_session_names,
     tmux_session_exists,
 )
-from councli.artifacts import new_run_dir, read_json, write_text
+from councli.artifacts import new_run_dir, read_json, write_json, write_text
 from councli.config import (
     ConfigTrustError,
     ProjectIdentityError,
@@ -73,7 +73,7 @@ from councli.protocol import render_result, run_executor
 
 app = typer.Typer(
     name="councli",
-    help="A local consensus layer for multiple coding CLI agents.",
+    help="A local council control plane for multiple coding CLI agents.",
     no_args_is_help=False,
     invoke_without_command=True,
 )
@@ -81,6 +81,18 @@ sessions_app = typer.Typer(help="Manage native tmux-backed agent sessions.")
 app.add_typer(sessions_app, name="sessions")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+COUNCLI_MASCOT = r"""
+     .----------------.
+   .'  codex  claude  '.
+  /  agy   [ board ]   \
+  \   kimi  codewhale  /
+   '.      councli    .'
+     '----------------'
+""".strip("\n")
+
+
+def print_mascot() -> None:
+    console.print(COUNCLI_MASCOT, style="cyan")
 
 
 def load_config(root: Path, *, auto_init: bool = False):
@@ -188,10 +200,14 @@ def trust(
 
 
 @app.command()
-def doctor(root: RootOpt = Path.cwd()) -> None:
+def doctor(
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable readiness JSON.")] = False,
+) -> None:
     """Check configured agent availability."""
     config = load_config(root, auto_init=True)
     runners = build_runners(config.agents)
+    records: list[dict[str, Any]] = []
 
     table = Table(title="councli doctor")
     table.add_column("Agent")
@@ -203,6 +219,25 @@ def doctor(root: RootOpt = Path.cwd()) -> None:
 
     for name, runner in runners.items():
         health = runner.health()
+        shared_ready = health.available and any("{prompt}" in part for part in (runner.config.broadcast_command or runner.config.command))
+        native_ready = health.available and bool(runner.config.start_command or runner.config.backend == "tmux")
+        record = {
+            "agent": name,
+            "enabled": health.enabled,
+            "binary": health.binary,
+            "backend": health.backend,
+            "path": health.path,
+            "available": health.available,
+            "reason": health.reason,
+            "intents": {
+                "chat": shared_ready,
+                "deliberate": shared_ready,
+                "vote": shared_ready,
+                "broadcast": health.available and bool(runner.config.broadcast_enabled),
+                "assistant": native_ready,
+            },
+        }
+        records.append(record)
         style = "green" if health.available else "yellow"
         table.add_row(
             name,
@@ -213,6 +248,9 @@ def doctor(root: RootOpt = Path.cwd()) -> None:
             f"[{style}]{health.reason}[/]",
         )
 
+    if json_output:
+        console.print_json(data={"config": str(project_config_path(root)), "agents": records})
+        return
     console.print(table)
     console.print(f"Config: {project_config_path(root)}")
 
@@ -1051,7 +1089,7 @@ def council(
         typer.Option("--attach", help="Attach to the visible tmux room instead of running rounds."),
     ] = False,
 ) -> None:
-    """Run the compact blackboard collaboration protocol."""
+    """Run an explicit peer-aware shared council turn."""
     if task is None:
         console.print("[yellow]No council task supplied. Opening interactive councli chat instead.[/]")
         chat(root=root, participant=participant, dry_run=dry_run)
@@ -1104,19 +1142,19 @@ def council(
             raise typer.Exit(code=2) from exc
         return
 
-    result = run_visible_council_turn(
+    result = run_shared_turn(
         task=task,
+        intent_name="deliberate",
         root=root,
         runners=runners,
         participant=selected_names,
         dry_run=dry_run,
-        run_kind="council",
     )
     if result is None:
         raise typer.Exit(code=2)
 
 
-@app.command()
+@app.command(hidden=True)
 def reason(
     task: Annotated[str, typer.Argument(help="Task or question for the agent council.")],
     root: RootOpt = Path.cwd(),
@@ -1125,31 +1163,20 @@ def reason(
         typer.Option("--dry-run", help="Write prompts and decisions without invoking agent CLIs."),
     ] = False,
 ) -> None:
-    """Run proposal, critique, vote, and decision rounds without editing files."""
+    """Deprecated: run a deliberate shared turn."""
     config = load_config(root)
     runners = build_runners(config.agents)
-    run_dir = new_run_dir(root, "reason")
-    write_task_brief(root, task=task, task_id=run_dir.name, run_dir=run_dir)
-    console.print(f"[bold]Run:[/] {run_dir}")
-
-    result = run_blackboard_council(
+    console.print("[yellow]`councli reason` is deprecated; using the shared /deliberate engine.[/]")
+    result = run_shared_turn(
         task=task,
-        runners=runners,
+        intent_name="deliberate",
         root=root,
-        run_dir=run_dir,
+        runners=runners,
+        participant=None,
         dry_run=dry_run,
-        min_confidence=config.consensus.min_confidence,
     )
-    decision = result.decision
-
-    if decision.get("approved"):
-        console.print("[green]Consensus reached[/]")
-    else:
-        console.print("[yellow]Consensus not approved[/]")
-    console.print(f"Plan: {decision.get('selected_plan')}")
-    console.print(f"Executor: {decision.get('selected_executor')}")
-    console.print(f"Reason: {decision.get('reason')}")
-    console.print(f"Blackboard: {run_dir / 'blackboard.md'}")
+    if result is None:
+        raise typer.Exit(code=2)
 
 
 @app.command()
@@ -1404,11 +1431,13 @@ def broadcast_runner(runner: AgentRunner) -> AgentRunner:
 
 
 def shared_turn_runner(runner: AgentRunner) -> AgentRunner:
-    if not any("{prompt}" in part for part in runner.config.command):
+    command = runner.config.broadcast_command or runner.config.command
+    if not any("{prompt}" in part for part in command):
         raise ValueError(f"{runner.name} has no prompt-capable command")
+    timeout = runner.config.broadcast_timeout_seconds or runner.config.timeout_seconds
     return AgentRunner(
         runner.name,
-        runner.config.model_copy(update={"backend": "exec"}),
+        runner.config.model_copy(update={"backend": "exec", "command": command, "timeout_seconds": timeout}),
     )
 
 
@@ -1538,7 +1567,11 @@ def run_shared_turn(
     for round_number in range(1, intent.max_rounds + 1):
         round_count = round_number
         context = render_peer_context(all_rounds) if round_number > 1 else ""
-        prompt = shared_turn_prompt(
+        phase = f"{intent.name}.round{round_number}"
+        packet_prompts = write_shared_turn_packets(
+            ledger=ledger,
+            run_dir=run_dir,
+            participants=list(runnable.keys()),
             task=task,
             intent=intent,
             brief_path=brief.path,
@@ -1546,9 +1579,7 @@ def run_shared_turn(
             peer_context=context,
         )
         console.print(f"\n[bold cyan]Round {round_number}[/] asking {', '.join(runnable.keys()) if runnable else '-'}")
-        round_results = run_turn_round(root=root, runners=runnable, prompt=prompt, dry_run=dry_run)
-        for name, result in round_results.items():
-            print_participant_status(f"{intent.name}.round{round_number}", name, result)
+        round_results = run_turn_round(root=root, runners=runnable, prompts=packet_prompts, dry_run=dry_run, phase=phase)
         merged_results = dict(degraded)
         merged_results.update(round_results)
         parsed_round: dict[str, dict[str, Any]] = {}
@@ -1562,7 +1593,7 @@ def run_shared_turn(
                 result = replace(result, output=body)
             latest_results[name] = result
             parsed_round[name] = {"result": result, "trailer": trailer}
-            write_shared_turn_result(
+            sidecar = write_shared_turn_result(
                 root=root,
                 run_dir=run_dir,
                 ledger=ledger,
@@ -1572,6 +1603,7 @@ def run_shared_turn(
                 round_number=round_number,
                 trailer=trailer,
             )
+            parsed_round[name]["sidecar"] = sidecar
         ledger.render()
         all_rounds.append(parsed_round)
         print_shared_round_responses(parsed_round, selected_names, intent=intent, round_number=round_number)
@@ -1580,7 +1612,14 @@ def run_shared_turn(
 
     decision = decide_shared_vote(all_rounds[-1], selected_names) if intent.require_vote and all_rounds else None
     if decision is not None:
-        write_text(run_dir / "decision.json", json_dumps(decision))
+        write_json(run_dir / "decisions" / "vote.json", decision)
+        ledger.append(
+            "decision.finalized",
+            phase=f"{intent.name}.decision",
+            payload=decision,
+            refs={"decision": "decisions/vote.json"},
+        )
+        ledger.render()
         print_shared_vote_decision(decision)
 
     final_answer = synthesize_shared_turn(
@@ -1640,25 +1679,94 @@ def run_conversation_turn(
     )
 
 
-def run_turn_round(*, root: Path, runners: dict[str, AgentRunner], prompt: str, dry_run: bool) -> dict[str, Any]:
+def write_shared_turn_packets(
+    *,
+    ledger: EventLedger,
+    run_dir: Path,
+    participants: list[str],
+    task: str,
+    intent: TurnIntent,
+    brief_path: Path,
+    round_number: int,
+    peer_context: str,
+) -> dict[str, str]:
+    prompts: dict[str, str] = {}
+    phase = f"{intent.name}.round{round_number}"
+    for name in participants:
+        packet = shared_turn_prompt(
+            task=task,
+            intent=intent,
+            brief_path=brief_path,
+            round_number=round_number,
+            peer_context=peer_context,
+            participant=name,
+        )
+        packet_path = ledger.write_packet(name, phase, packet)
+        packet_ref = packet_path.relative_to(run_dir).as_posix()
+        ledger.append(
+            "packet.created",
+            phase=phase,
+            participant=name,
+            refs={"packet": packet_ref},
+            payload={"intent": intent.name, "round": round_number},
+        )
+        prompts[name] = shared_turn_packet_pointer(packet_path)
+    ledger.render()
+    return prompts
+
+
+def shared_turn_packet_pointer(packet_path: Path) -> str:
+    return (
+        "COUNCLI_SHARED_TURN=1\n"
+        f"COUNCLI_PACKET_FILE={packet_path}\n\n"
+        "Read the packet file above and answer exactly according to it. "
+        "Do not rely on this short pointer as the full task."
+    )
+
+
+def run_turn_round(
+    *,
+    root: Path,
+    runners: dict[str, AgentRunner],
+    prompts: dict[str, str],
+    dry_run: bool,
+    phase: str,
+) -> dict[str, Any]:
     results: dict[str, Any] = {}
     if dry_run:
         for name, runner in runners.items():
-            results[name] = runner.run(prompt, cwd=root, dry_run=True)
+            console.print(f"[cyan]{phase}:{name} start[/]")
+            results[name] = runner.run(prompts.get(name, ""), cwd=root, dry_run=True)
+            print_participant_status(phase, name, results[name])
         return results
     if not runners:
         return results
     with ThreadPoolExecutor(max_workers=max(1, len(runners))) as pool:
         futures = {
-            pool.submit(runner.run, prompt, cwd=root, dry_run=False): name
+            pool.submit(runner.run, prompts.get(name, ""), cwd=root, dry_run=False): name
             for name, runner in runners.items()
         }
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                results[name] = future.result()
-            except Exception as exc:  # pragma: no cover - adapter guard
-                results[name] = runner_unavailable_result(name, str(exc))
+        start_times = {name: time.monotonic() for name in runners}
+        next_notice = {name: 10 for name in runners}
+        for name in runners:
+            console.print(f"[cyan]{phase}:{name} start[/]")
+        pending = set(futures)
+        while pending:
+            done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+            now = time.monotonic()
+            for future in done:
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception as exc:  # pragma: no cover - adapter guard
+                    results[name] = runner_unavailable_result(name, str(exc))
+                print_participant_status(phase, name, results[name])
+            for future in pending:
+                name = futures[future]
+                elapsed = int(now - start_times[name])
+                if elapsed >= next_notice[name]:
+                    console.print(f"[cyan]{phase}:{name} working {elapsed}s[/]")
+                    next_notice[name] += 10
     return results
 
 
@@ -1669,10 +1777,12 @@ def shared_turn_prompt(
     brief_path: Path,
     round_number: int,
     peer_context: str,
+    participant: str | None = None,
 ) -> str:
     parts = [
         "COUNCLI_SHARED_TURN=1",
         f"COUNCLI_INTENT={intent.name}",
+        f"COUNCLI_PARTICIPANT={participant or 'unknown'}",
         "",
         "You are one participant in a councli shared room with other coding assistants.",
         "Councli is only the control plane: it records the blackboard and routes messages.",
@@ -1748,19 +1858,26 @@ def default_turn_trailer() -> dict[str, Any]:
     return {"continue": False, "recommend": "none", "summary": ""}
 
 
-def render_peer_context(all_rounds: list[dict[str, dict[str, Any]]]) -> str:
+def render_peer_context(all_rounds: list[dict[str, dict[str, Any]]], *, per_participant_limit: int = 6000) -> str:
     lines: list[str] = []
     for index, round_data in enumerate(all_rounds, start=1):
         lines.append(f"## Round {index}")
         for name, data in round_data.items():
             result = data["result"]
-            trailer = data.get("trailer") or {}
             body = result.output if result.ok else result.error
-            summary = trailer.get("summary") or compact_for_stdout(body, limit=180)
             status = "ok" if result.ok else "skipped" if result.skipped else "failed"
-            lines.append(f"- {name} ({status}): {summary}")
+            lines.extend([f"### {name} ({status})", ""])
+            lines.append(bound_peer_body(body, limit=per_participant_limit))
+            lines.append("")
         lines.append("")
     return "\n".join(lines).strip()
+
+
+def bound_peer_body(body: str, *, limit: int) -> str:
+    text = (body or "(empty)").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n\n[truncated by councli after {limit} characters]"
 
 
 def should_continue_shared_turn(*, intent: TurnIntent, round_number: int, parsed_round: dict[str, dict[str, Any]]) -> bool:
@@ -1790,20 +1907,33 @@ def write_shared_turn_result(
     intent: TurnIntent,
     round_number: int,
     trailer: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
     status = "ok" if result.ok else "skipped" if result.skipped else "failed"
     suffix = "md" if result.ok else "skipped.txt" if result.skipped else "failed.txt"
     body = result.output if result.ok else "\n\n".join(part for part in [result.error, result.output] if part)
     phase = f"{intent.name}.round{round_number}"
     path = run_dir / "shared" / phase / f"{name}.{suffix}"
     write_text(path, (body or "(empty)").rstrip() + "\n")
+    body_ref = path.relative_to(run_dir).as_posix()
+    sidecar = build_response_sidecar(
+        run_dir=run_dir,
+        name=name,
+        result=result,
+        intent=intent,
+        round_number=round_number,
+        body_ref=body_ref,
+        trailer=trailer,
+    )
+    sidecar_path = run_dir / "shared" / phase / f"{name}.response.json"
+    write_json(sidecar_path, sidecar)
+    sidecar_ref = sidecar_path.relative_to(run_dir).as_posix()
     ref = ledger.write_blob(phase, name, body or result.error or "(empty)", suffix="md" if result.ok else "txt")
     ledger.append(
         "response.received",
         phase=phase,
         participant=name,
         status=status,
-        refs={"content" if result.ok else "error": ref},
+        refs={"content" if result.ok else "error": ref, "sidecar": sidecar_ref},
         payload={
             "ok": result.ok,
             "skipped": result.skipped,
@@ -1814,6 +1944,8 @@ def write_shared_turn_result(
             "exit_code": result.exit_code,
             "error": result.error,
             "trailer": trailer,
+            "sidecar": sidecar_ref,
+            "failure_class": sidecar.get("failure_class"),
         },
     )
     append_project_event(
@@ -1832,6 +1964,51 @@ def write_shared_turn_result(
         },
         refs={"run": str(run_dir), "artifact": str(path)},
     )
+    return sidecar
+
+
+def build_response_sidecar(
+    *,
+    run_dir: Path,
+    name: str,
+    result: Any,
+    intent: TurnIntent,
+    round_number: int,
+    body_ref: str,
+    trailer: dict[str, Any],
+) -> dict[str, Any]:
+    status = "ok" if result.ok else "skipped" if result.skipped else "failed"
+    vote_value = str(trailer.get("vote") or "").strip()
+    confidence = trailer.get("confidence")
+    if not isinstance(confidence, int | float):
+        confidence = 0.0
+    return {
+        "schema_version": "councli.response.v1",
+        "id": f"resp_{safe_response_id(run_dir.name)}_{safe_response_id(name)}_{intent.name}_round{round_number}",
+        "request_id": run_dir.name,
+        "kind": "participant.response",
+        "participant": name,
+        "intent": intent.name,
+        "round": round_number,
+        "status": status,
+        "body_ref": body_ref,
+        "summary": str(trailer.get("summary") or ""),
+        "continue": bool(trailer.get("continue")),
+        "recommend": str(trailer.get("recommend") or "none"),
+        "vote": {
+            "value": vote_value,
+            "confidence": float(confidence),
+            "valid": bool(result.ok and vote_value),
+        },
+        "failure_class": result.failure_class or ("" if result.ok else "skipped" if result.skipped else "launch_failed"),
+        "exit_code": result.exit_code,
+        "duration_seconds": round(float(result.duration_seconds or 0.0), 3),
+        "command": result.command,
+    }
+
+
+def safe_response_id(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_") or "item"
 
 
 def print_shared_round_responses(
@@ -1966,12 +2143,17 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
         if not result.ok:
             abstentions[name] = result.error or "unavailable"
             continue
-        vote = str(trailer.get("vote") or "").strip()
+        sidecar = data.get("sidecar") or {}
+        vote_data = sidecar.get("vote") if isinstance(sidecar, dict) else None
+        vote = str((vote_data or {}).get("value") or "").strip() if isinstance(vote_data, dict) else ""
+        if not vote:
+            vote = str(trailer.get("vote") or "").strip()
         if not vote and str(result.output or "").lstrip().startswith("DRY RUN:"):
             abstentions[name] = "dry run"
             continue
         if not vote:
-            vote = compact_for_stdout(result.output, limit=80)
+            abstentions[name] = "missing structured vote"
+            continue
         if vote:
             votes[name] = vote
         else:
@@ -2180,6 +2362,7 @@ def chat(
     """Open a small interactive councli prompt."""
     config = load_config(root, auto_init=True)
     runners = build_runners(config.agents)
+    print_mascot()
     console.print("[bold]councli interactive[/]")
     console.print("Type normally for shared conversation, /deliberate or /vote for explicit governance, /help for commands.")
     print_available_participants(runners)
@@ -2211,7 +2394,7 @@ def chat(
         )
 
 
-@app.command()
+@app.command(hidden=True)
 def run(
     task: Annotated[str, typer.Argument(help="Implementation task for the agent council.")],
     root: RootOpt = Path.cwd(),
@@ -2427,7 +2610,7 @@ def run(
         raise typer.Exit(code=2)
 
 
-@app.command("apply")
+@app.command("apply", hidden=True)
 def apply_run(
     run: Annotated[str, typer.Argument(help="Run id, unique prefix, or 'latest'.")] = "latest",
     root: RootOpt = Path.cwd(),
@@ -2547,7 +2730,7 @@ def handle_chat_command(
         console.print(
             "Commands: /help, /doctor, /status, /show [run|latest] [--blackboard], "
             "/sessions, /assistant <name> [instance], /broadcast <prompt>, /brief [task], "
-            "/deliberate <prompt>, /vote <prompt>, /council <prompt>, /legacy-council <prompt>, /quit"
+            "/deliberate <prompt>, /vote <prompt>, /council <prompt>, /quit"
         )
         console.print("Normal lines run a shared conversation turn. Slash commands opt into stronger coordination.")
         console.print("/assistant attaches to a native session; press Ctrl-] to return.")
@@ -2623,20 +2806,6 @@ def handle_chat_command(
             runners=runners,
             participant=participant,
             dry_run=dry_run,
-        )
-        return False
-    if command == "/legacy-council":
-        task = line[len(parts[0]) :].strip()
-        if not task:
-            console.print("[yellow]Usage:[/] /legacy-council <prompt>")
-            return False
-        run_visible_council_turn(
-            task=task,
-            root=root,
-            runners=runners,
-            participant=participant,
-            dry_run=dry_run,
-            run_kind="legacy-council",
         )
         return False
     if command == "/show":

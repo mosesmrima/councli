@@ -124,7 +124,8 @@ DEFAULT_CONFIG = CouncliConfig(
             command=[
                 "codex",
                 "exec",
-                "--dangerously-bypass-approvals-and-sandbox",
+                "--sandbox",
+                "read-only",
                 "--skip-git-repo-check",
                 "{prompt}",
             ],
@@ -143,7 +144,7 @@ DEFAULT_CONFIG = CouncliConfig(
         "claude": AgentConfig(
             backend="exec",
             binary="claude",
-            command=["claude", "--dangerously-skip-permissions", "-p", "{prompt}"],
+            command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
             broadcast_command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
             resume_command=["claude", "--resume", "{session_id}"],
             start_command=["claude", "--dangerously-skip-permissions"],
@@ -152,7 +153,7 @@ DEFAULT_CONFIG = CouncliConfig(
         "agy": AgentConfig(
             backend="exec",
             binary="agy",
-            command=["agy", "--dangerously-skip-permissions", "-p", "{prompt}"],
+            command=["agy", "--sandbox", "--print", "{prompt}"],
             broadcast_command=["agy", "--sandbox", "--print", "{prompt}"],
             resume_command=["agy", "--conversation", "{session_id}"],
             start_command=["agy", "--dangerously-skip-permissions"],
@@ -161,7 +162,7 @@ DEFAULT_CONFIG = CouncliConfig(
         "codewhale": AgentConfig(
             backend="exec",
             binary="codewhale",
-            command=["codewhale", "--yolo", "exec", "--auto", "{prompt}"],
+            command=["codewhale", "exec", "{prompt}"],
             broadcast_command=["codewhale", "exec", "{prompt}"],
             resume_command=["codewhale", "--resume", "{session_id}"],
             start_command=["codewhale", "--yolo"],
@@ -173,7 +174,7 @@ DEFAULT_CONFIG = CouncliConfig(
             command=["kimi", "--prompt", "{prompt}"],
             broadcast_command=["kimi", "--prompt", "{prompt}"],
             resume_command=["kimi", "--session", "{session_id}"],
-            start_command=["kimi", "--yolo", "--auto"],
+            start_command=["kimi"],
             timeout_seconds=900,
         ),
     }

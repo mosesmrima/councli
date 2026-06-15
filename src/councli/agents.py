@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import shlex
+import signal
 import subprocess
 import time
 import uuid
@@ -27,6 +28,20 @@ AUTH_ERROR_MARKERS = (
     "payment",
     "subscription",
 )
+MODEL_ERROR_MARKERS = (
+    "no model",
+    "model not configured",
+    "default_model",
+    "provider",
+    "no provider",
+)
+QUOTA_ERROR_MARKERS = (
+    "quota",
+    "rate limit",
+    "payment",
+    "billing",
+    "subscription",
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +64,8 @@ class AgentRunResult:
     output: str
     error: str
     command: list[str]
+    duration_seconds: float = 0.0
+    failure_class: str = ""
 
 
 class AgentRunner:
@@ -139,26 +156,34 @@ class AgentRunner:
                 command=command,
             )
 
+        start = time.monotonic()
+        proc: subprocess.Popen[str] | None = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 command,
                 cwd=cwd,
                 text=True,
-                capture_output=True,
-                timeout=self.config.timeout_seconds,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            stdout, stderr = proc.communicate(timeout=self.config.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            if proc is not None:
+                terminate_process_group(proc)
+                stdout, stderr = proc.communicate()
+            else:
+                stdout, stderr = "", ""
             return AgentRunResult(
                 name=self.name,
                 ok=False,
                 skipped=False,
                 exit_code=None,
-                output=stdout,
-                error=f"timed out after {self.config.timeout_seconds}s\n{stderr}".strip(),
+                output=(stdout or "").strip(),
+                error=f"timed out after {self.config.timeout_seconds}s\n{stderr or ''}".strip(),
                 command=command,
+                duration_seconds=time.monotonic() - start,
+                failure_class="timeout",
             )
         except OSError as exc:
             return AgentRunResult(
@@ -169,12 +194,15 @@ class AgentRunner:
                 output="",
                 error=str(exc),
                 command=command,
+                duration_seconds=time.monotonic() - start,
+                failure_class="launch_failed",
             )
 
-        output = (proc.stdout or "").strip()
-        error = (proc.stderr or "").strip()
+        output = (stdout or "").strip()
+        error = (stderr or "").strip()
         ok = proc.returncode == 0
-        if not ok and looks_like_auth_error(error or output):
+        failure_class = "" if ok else classify_agent_failure(error or output)
+        if not ok and failure_class == "auth_required":
             error = f"agent unavailable or unauthenticated: {error or output}"
 
         return AgentRunResult(
@@ -185,6 +213,8 @@ class AgentRunner:
             output=output,
             error=error,
             command=command,
+            duration_seconds=time.monotonic() - start,
+            failure_class=failure_class,
         )
 
     def _run_tmux(
@@ -302,8 +332,34 @@ class AgentRunner:
 
 
 def looks_like_auth_error(text: str) -> bool:
-    lowered = text.lower()
+    lowered = (text or "").lower()
     return any(marker in lowered for marker in AUTH_ERROR_MARKERS)
+
+
+def classify_agent_failure(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(marker in lowered for marker in QUOTA_ERROR_MARKERS):
+        return "quota_unavailable"
+    if any(marker in lowered for marker in AUTH_ERROR_MARKERS):
+        return "auth_required"
+    if any(marker in lowered for marker in MODEL_ERROR_MARKERS):
+        return "model_unconfigured"
+    return "launch_failed"
+
+
+def terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 2.0
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def build_runners(agent_configs: dict[str, AgentConfig]) -> dict[str, AgentRunner]:

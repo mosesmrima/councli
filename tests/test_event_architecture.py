@@ -65,6 +65,9 @@ def fake_agent_script() -> str:
         "    out.write_text(body)\n"
         "    print('wrote ' + str(out))\n"
         "elif 'COUNCLI_SHARED_TURN=1' in prompt:\n"
+        "    packet_pointer = re.search(r'COUNCLI_PACKET_FILE=([^\\n]+)', prompt)\n"
+        "    if packet_pointer:\n"
+        "        prompt = pathlib.Path(packet_pointer.group(1).strip()).read_text()\n"
         "    intent_match = re.search(r'COUNCLI_INTENT=([^\\n]+)', prompt)\n"
         "    intent = intent_match.group(1) if intent_match else 'chat'\n"
         "    round_match = re.search(r'^Round: ([0-9]+)$', prompt, re.M)\n"
@@ -188,6 +191,37 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("codex", state["participants"])
             self.assertEqual(state["phases"]["propose"]["codex"]["content"], "PLAN\n- keep it simple")
             self.assertIn("PLAN\n- keep it simple", blackboard)
+
+    def test_event_ledger_uses_run_lock_for_cross_process_appends(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            script = (
+                "from pathlib import Path\n"
+                "import sys\n"
+                "from councli.events import EventLedger\n"
+                "ledger = EventLedger(Path(sys.argv[1]), run_id='run')\n"
+                "for i in range(50):\n"
+                "    ledger.append('test.event', participant=sys.argv[2], payload={'i': i})\n"
+            )
+            procs = [
+                subprocess.Popen(
+                    [PYTHON, "-c", script, str(run_dir), name],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                for name in ("alpha", "beta")
+            ]
+            outputs = [proc.communicate(timeout=30) for proc in procs]
+            for proc, output in zip(procs, outputs, strict=True):
+                self.assertEqual(proc.returncode, 0, output[0] + output[1])
+
+            events = read_events(run_dir)
+            seqs = [event["seq"] for event in events]
+            self.assertEqual(len(events), 100)
+            self.assertEqual(seqs, list(range(100)))
+            self.assertTrue((run_dir / "run.lock").exists())
 
     def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -817,8 +851,10 @@ class EventArchitectureTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             self.assertIn("councli interactive", proc.stdout)
+            self.assertIn("[ board ]", proc.stdout)
             self.assertIn("Task: make a visible plan", proc.stdout)
             self.assertIn("Asking:", proc.stdout)
+            self.assertIn("chat.round1:alpha start", proc.stdout)
             self.assertIn("Responses", proc.stdout)
             self.assertIn("Councli", proc.stdout)
 
@@ -855,6 +891,40 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("Round 1", proc.stdout)
             self.assertIn("Round 2", proc.stdout)
             self.assertNotIn("ORIENT", proc.stdout)
+
+    def test_shared_turn_writes_packets_sidecars_and_peer_visible_round_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="/deliberate compare adapter designs\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            run_dir = [path for path in sorted((root / ".councli" / "runs").iterdir()) if path.name.endswith("-deliberate")][-1]
+            blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
+            self.assertIn("## Deliberate Round 1", blackboard)
+            self.assertIn("## Deliberate Round 2", blackboard)
+            self.assertNotIn("## Orient", blackboard)
+
+            alpha_sidecar = json.loads((run_dir / "shared" / "deliberate.round1" / "alpha.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(alpha_sidecar["schema_version"], "councli.response.v1")
+            self.assertEqual(alpha_sidecar["participant"], "alpha")
+            self.assertEqual(alpha_sidecar["intent"], "deliberate")
+            self.assertIn("COUNCLI_PACKET_FILE=", "\n".join(alpha_sidecar["command"]))
+            self.assertLess(len("\n".join(alpha_sidecar["command"])), 1000)
+
+            packet_text = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted((run_dir / "packets" / "alpha").glob("*.md"))
+                if "Round: 2" in path.read_text(encoding="utf-8")
+            )
+            self.assertIn("alpha shared deliberate response round 1", packet_text)
+            self.assertIn("beta shared deliberate response round 1", packet_text)
 
     def test_parse_turn_trailer_strips_metadata(self) -> None:
         body, trailer = parse_turn_trailer(
@@ -908,11 +978,11 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(native_runner.config.backend, "tmux")
         self.assertEqual(native_runner.config.command, [PYTHON, "-c", "print('native')"])
 
-    def test_kimi_headless_default_does_not_combine_prompt_with_yolo(self) -> None:
+    def test_kimi_headless_default_does_not_combine_prompt_with_yolo_or_yolo_start(self) -> None:
         kimi = DEFAULT_CONFIG.agents["kimi"]
 
         self.assertEqual(kimi.command, ["kimi", "--prompt", "{prompt}"])
-        self.assertEqual(kimi.start_command, ["kimi", "--yolo", "--auto"])
+        self.assertEqual(kimi.start_command, ["kimi"])
 
     def test_task_brief_records_native_session_registry(self) -> None:
         from councli.native import reconcile_session_registry, upsert_session, write_task_brief
@@ -1065,6 +1135,24 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(project_config_path(root).exists())
             self.assertIn("Created default councli config", proc.stdout + proc.stderr)
             self.assertIn("councli doctor", proc.stdout + proc.stderr)
+
+    def test_doctor_json_reports_intent_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertTrue(alpha["intents"]["chat"])
+            self.assertTrue(alpha["intents"]["deliberate"])
+            self.assertTrue(alpha["intents"]["vote"])
 
     def test_init_disable_missing_disables_absent_default_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
