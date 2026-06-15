@@ -3073,6 +3073,33 @@ def record_interactive_turn(*, root: Path, run_dir: Path, task: str, result: Any
     )
 
 
+def record_run_canceled(
+    *,
+    run_dir: Path,
+    task: str,
+    phase: str,
+    stopped_processes: int,
+    executor: str | None = None,
+    attempt: int | None = None,
+    worktree: str | None = None,
+) -> None:
+    ledger = EventLedger(run_dir, run_id=run_dir.name)
+    payload: dict[str, Any] = {
+        "task": task,
+        "phase": phase,
+        "status": "canceled",
+        "stopped_processes": stopped_processes,
+    }
+    if executor is not None:
+        payload["executor"] = executor
+    if attempt is not None:
+        payload["attempt"] = attempt
+    if worktree is not None:
+        payload["worktree"] = worktree
+    ledger.append("run.canceled", status="canceled", phase=phase, participant=executor, payload=payload)
+    ledger.render()
+
+
 @app.command()
 def chat(
     root: RootOpt = Path.cwd(),
@@ -3158,15 +3185,22 @@ def run(
     write_task_brief(root, task=task, task_id=run_dir.name, run_dir=run_dir)
     console.print(f"[bold]Run:[/] {run_dir}")
 
-    council_result = run_blackboard_council(
-        task=task,
-        runners=runners,
-        root=root,
-        run_dir=run_dir,
-        dry_run=dry_run,
-        complete_run=False,
-        min_confidence=config.consensus.min_confidence,
-    )
+    try:
+        council_result = run_blackboard_council(
+            task=task,
+            runners=runners,
+            root=root,
+            run_dir=run_dir,
+            dry_run=dry_run,
+            complete_run=False,
+            min_confidence=config.consensus.min_confidence,
+        )
+    except KeyboardInterrupt:
+        stopped = cancel_active_agent_processes()
+        record_run_canceled(run_dir=run_dir, task=task, phase="council", stopped_processes=stopped)
+        console.print("\n[yellow]Run canceled during council deliberation.[/]")
+        console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+        raise typer.Exit(code=130)
     decision = council_result.decision
 
     if not decision.get("approved") and not force:
@@ -3232,17 +3266,32 @@ def run(
             },
         )
         ledger.render()
-        result = run_executor(
-            task=task,
-            runner=executor_runner,
-            worktree=worktree.path,
-            transcript=transcript,
-            run_dir=run_dir,
-            selected_plan=selected_plan,
-            selected_plan_content=selected_plan_content,
-            revision_concerns=revision_concerns,
-            dry_run=dry_run,
-        )
+        try:
+            result = run_executor(
+                task=task,
+                runner=executor_runner,
+                worktree=worktree.path,
+                transcript=transcript,
+                run_dir=run_dir,
+                selected_plan=selected_plan,
+                selected_plan_content=selected_plan_content,
+                revision_concerns=revision_concerns,
+                dry_run=dry_run,
+            )
+        except KeyboardInterrupt:
+            stopped = cancel_active_agent_processes()
+            record_run_canceled(
+                run_dir=run_dir,
+                task=task,
+                phase="implementation",
+                stopped_processes=stopped,
+                executor=executor,
+                attempt=attempt,
+                worktree=str(worktree.path),
+            )
+            console.print("\n[yellow]Run canceled during implementation.[/]")
+            console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+            raise typer.Exit(code=130)
         last_result = result
         diff_text = diff(worktree.path, base_ref=worktree.base_ref)
         attempt_dir = run_dir / "implementation" / f"attempt-{attempt}"
@@ -3280,17 +3329,32 @@ def run(
             final_error = "executor produced no reviewable diff"
             break
 
-        review_decision = run_review_phase(
-            council_result.state,
-            runners,
-            executor=executor,
-            attempt=attempt,
-            selected_plan=selected_plan,
-            diff_ref=diff_ref,
-            result_ref=result_ref,
-            dry_run=dry_run,
-            min_confidence=config.consensus.min_confidence,
-        )
+        try:
+            review_decision = run_review_phase(
+                council_result.state,
+                runners,
+                executor=executor,
+                attempt=attempt,
+                selected_plan=selected_plan,
+                diff_ref=diff_ref,
+                result_ref=result_ref,
+                dry_run=dry_run,
+                min_confidence=config.consensus.min_confidence,
+            )
+        except KeyboardInterrupt:
+            stopped = cancel_active_agent_processes()
+            record_run_canceled(
+                run_dir=run_dir,
+                task=task,
+                phase="review",
+                stopped_processes=stopped,
+                executor=executor,
+                attempt=attempt,
+                worktree=str(worktree.path),
+            )
+            console.print("\n[yellow]Run canceled during review.[/]")
+            console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+            raise typer.Exit(code=130)
         verdict = review_decision.get("verdict")
         if verdict == "accepted":
             final_status = "accepted"

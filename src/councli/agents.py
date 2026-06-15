@@ -242,7 +242,12 @@ class AgentRunner:
             )
             register_active_process(proc)
             try:
-                stdout, stderr = proc.communicate(timeout=self.config.timeout_seconds)
+                try:
+                    stdout, stderr = proc.communicate(timeout=self.config.timeout_seconds)
+                except KeyboardInterrupt:
+                    terminate_process_group(proc)
+                    proc.communicate()
+                    raise
             finally:
                 unregister_active_process(proc)
         except subprocess.TimeoutExpired:

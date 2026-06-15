@@ -142,9 +142,10 @@ questions after failure:
 ## Cancellation model
 
 Current behavior: `KeyboardInterrupt` exits the interactive shell or current
-foreground operation. Shared turns record `turn.canceled` and terminate active
-headless agent process groups, but cancellation is not consistently modeled
-across every command.
+foreground operation. Shared turns record `turn.canceled`; experimental
+implementation runs record `run.canceled` during council, implementation, and
+review phases. Active headless agent process groups are terminated where
+`councli` is managing them directly.
 
 Target behavior:
 

@@ -21,6 +21,7 @@ from councli.cli import (
     implementation_runner,
     native_session_runner,
     parse_turn_trailer,
+    record_run_canceled,
     render_peer_context,
     shared_turn_runner,
     supports_native_session,
@@ -261,6 +262,33 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(state["phases"]["propose"]["codex"]["content"], "PLAN\n- keep it simple")
             self.assertEqual(state["run_canceled"]["rounds"], 1)
             self.assertIn("PLAN\n- keep it simple", blackboard)
+            self.assertIn("## Run Canceled", blackboard)
+
+    def test_record_run_canceled_renders_canceled_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            ledger = EventLedger(run_dir, run_id="run")
+            ledger.append("run.started", payload={"task": "implement cancellation"})
+            ledger.render()
+
+            record_run_canceled(
+                run_dir=run_dir,
+                task="implement cancellation",
+                phase="implementation",
+                stopped_processes=2,
+                executor="alpha",
+                attempt=1,
+                worktree="/tmp/worktree",
+            )
+
+            events = read_events(run_dir)
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
+            self.assertEqual(events[-1]["type"], "run.canceled")
+            self.assertEqual(events[-1]["status"], "canceled")
+            self.assertEqual(state["run_canceled"]["phase"], "implementation")
+            self.assertEqual(state["run_canceled"]["executor"], "alpha")
+            self.assertEqual(state["run_canceled"]["stopped_processes"], 2)
             self.assertIn("## Run Canceled", blackboard)
 
     def test_event_ledger_uses_run_lock_for_cross_process_appends(self) -> None:

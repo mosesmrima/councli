@@ -486,7 +486,8 @@ Treat the system as not production-grade until these gates pass:
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add binary version reporting to human security summaries.
-9. Finish consistent canceled-state recording for all foreground commands.
+9. Continue expanding canceled-state recording beyond shared turns and
+   experimental run phases.
 10. Keep improving bounded context packing with durable summaries, and extend
     recovery to orphaned artifacts and future indexes.
 11. Add retention/redaction and optional metrics export.

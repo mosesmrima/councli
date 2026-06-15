@@ -255,7 +255,7 @@ def project_state(run_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]
             state["review_decision"] = payload
         elif event_type == "run.completed":
             state["run_completed"] = payload
-        elif event_type == "turn.canceled":
+        elif event_type in {"turn.canceled", "run.canceled"}:
             state["run_canceled"] = payload
     return state
 
