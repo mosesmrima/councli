@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -41,10 +42,13 @@ from councli.artifacts import new_run_dir, read_json, write_json, write_text
 from councli.config import (
     ARTIFACT_CLASSES,
     ConfigTrustError,
+    CouncliConfig,
     ProjectIdentityError,
+    executable_config_hash,
     load_config as load_config_model,
     project_config_path,
     project_trust_path,
+    resolved_agent_binaries,
     trust_project_config,
     write_default_config,
 )
@@ -302,6 +306,308 @@ def doctor(
         return
     console.print(table)
     console.print(f"Config: {project_config_path(root)}")
+
+
+@app.command()
+def security(
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable security JSON.")] = False,
+) -> None:
+    """Show trusted command, binary, version, and permission drift without running agents."""
+    try:
+        report = build_security_report(root)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+
+    if json_output:
+        console.print_json(data=report)
+        return
+    print_security_report(report)
+
+
+def build_security_report(root: Path) -> dict[str, Any]:
+    config_path = project_config_path(root)
+    if not config_path.exists():
+        raise FileNotFoundError(f"No councli config at {config_path}. Run: councli init")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid config at {config_path}: expected a YAML mapping")
+
+    executable_hash = executable_config_hash(raw)
+    validation: dict[str, Any] = {"status": "ok", "error": None}
+    validated: CouncliConfig | None = None
+    try:
+        validated = CouncliConfig.model_validate(raw)
+    except Exception as exc:  # pydantic raises ValidationError; keep report dependency-light here.
+        validation = {"status": "invalid", "error": str(exc)}
+
+    trust_path = project_trust_path(root)
+    trust: dict[str, Any] | None = None
+    trust_status = "trusted"
+    trust_error: str | None = None
+    trusted_hash: str | None = None
+    trusted_binaries: dict[str, Any] = {}
+    try:
+        trust = json.loads(trust_path.read_text(encoding="utf-8"))
+        if not isinstance(trust, dict):
+            raise ValueError("trust file is not a JSON object")
+        trust_config = trust.get("config") if isinstance(trust.get("config"), dict) else {}
+        trusted_hash = trust_config.get("executable_hash") if isinstance(trust_config.get("executable_hash"), str) else None
+        trusted_raw_binaries = trust_config.get("binaries")
+        trusted_binaries = trusted_raw_binaries if isinstance(trusted_raw_binaries, dict) else {}
+        if trusted_hash != executable_hash:
+            trust_status = "config_changed"
+    except FileNotFoundError:
+        trust_status = "missing"
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        trust_status = "invalid"
+        trust_error = str(exc)
+
+    current_binaries = resolved_agent_binaries(raw, include_versions=True)
+    agent_names = sorted(
+        set(current_binaries)
+        | set(trusted_binaries)
+        | set((raw.get("agents") or {}).keys() if isinstance(raw.get("agents"), dict) else [])
+    )
+    agents = [
+        build_security_agent_record(
+            name,
+            raw=raw,
+            validated=validated,
+            current=current_binaries.get(name) or {},
+            trusted=trusted_binaries.get(name) if isinstance(trusted_binaries.get(name), dict) else None,
+            trust_status=trust_status,
+        )
+        for name in agent_names
+    ]
+    drift_statuses = {"path_drift", "hash_drift", "version_drift"}
+    binary_drift = [agent for agent in agents if agent["trust_status"] in drift_statuses]
+    if trust_status == "trusted" and binary_drift:
+        trust_status = "trusted_with_binary_drift"
+
+    native_raw = raw.get("native") if isinstance(raw.get("native"), dict) else {}
+    return {
+        "root": str(root.resolve()),
+        "config": {
+            "path": str(config_path),
+            "executable_hash": executable_hash,
+            "validation": validation,
+        },
+        "trust": {
+            "path": str(trust_path),
+            "exists": trust_path.exists(),
+            "status": trust_status,
+            "error": trust_error,
+            "trusted_hash": trusted_hash,
+            "config_trusted": trusted_hash == executable_hash,
+            "binary_drift_agents": [agent["agent"] for agent in binary_drift],
+        },
+        "native": {
+            "tmux_socket": native_raw.get("tmux_socket", "councli"),
+            "session_prefix": native_raw.get("session_prefix", "councli"),
+            "raw_log_max_bytes": native_raw.get("raw_log_max_bytes", 5_000_000),
+            "raw_log_backups": native_raw.get("raw_log_backups", 3),
+        },
+        "agents": agents,
+    }
+
+
+def build_security_agent_record(
+    name: str,
+    *,
+    raw: dict[str, Any],
+    validated: CouncliConfig | None,
+    current: dict[str, Any],
+    trusted: dict[str, Any] | None,
+    trust_status: str,
+) -> dict[str, Any]:
+    raw_agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
+    raw_agent = raw_agents.get(name) if isinstance(raw_agents.get(name), dict) else {}
+    validated_agent = validated.agents.get(name) if validated is not None and name in validated.agents else None
+
+    enabled = (
+        validated_agent.enabled
+        if validated_agent is not None
+        else raw_agent.get("enabled", True) is not False
+    )
+    agent_trust_status = classify_agent_trust_status(
+        enabled=enabled,
+        current=current,
+        trusted=trusted,
+        global_trust_status=trust_status,
+    )
+    command_capabilities = {
+        "command": list(
+            validated_agent.command_capabilities
+            if validated_agent is not None
+            else string_list(raw_agent.get("command_capabilities"))
+        ),
+        "broadcast": list(
+            validated_agent.broadcast_capabilities
+            if validated_agent is not None
+            else string_list(raw_agent.get("broadcast_capabilities"))
+        ),
+        "native_start": list(
+            validated_agent.start_capabilities
+            if validated_agent is not None
+            else string_list(raw_agent.get("start_capabilities"))
+        ),
+        "native_resume": list(
+            validated_agent.resume_capabilities
+            if validated_agent is not None
+            else string_list(raw_agent.get("resume_capabilities"))
+        ),
+    }
+    elevated = [
+        surface
+        for surface, capabilities in command_capabilities.items()
+        if READ_ONLY_DENIED_COMMAND_CAPABILITIES & set(capabilities)
+    ]
+    read_only_policy = (
+        validated_agent.read_only_policy
+        if validated_agent is not None
+        else raw_agent.get("read_only_policy", "safe_only")
+    )
+    broadcast_policy = (
+        validated_agent.broadcast_policy
+        if validated_agent is not None
+        else raw_agent.get("broadcast_policy", "safe_only")
+    )
+    return {
+        "agent": name,
+        "enabled": enabled,
+        "backend": (
+            validated_agent.backend
+            if validated_agent is not None
+            else raw_agent.get("backend", "exec")
+        ),
+        "binary": current.get("binary") or raw_agent.get("binary"),
+        "current": {
+            "path": current.get("path"),
+            "sha256": current.get("sha256"),
+            "version": current.get("version"),
+            "version_status": current.get("version_status", "not_checked"),
+            "version_command": current.get("version_command"),
+        },
+        "trusted": {
+            "path": trusted.get("path") if trusted else None,
+            "sha256": trusted.get("sha256") if trusted else None,
+            "version": trusted.get("version") if trusted else None,
+            "version_status": trusted.get("version_status") if trusted else None,
+            "version_command": trusted.get("version_command") if trusted else None,
+        },
+        "trust_status": agent_trust_status,
+        "capabilities": list(validated_agent.capabilities if validated_agent is not None else string_list(raw_agent.get("capabilities"))),
+        "command_capabilities": command_capabilities,
+        "read_only_policy": read_only_policy,
+        "broadcast_policy": broadcast_policy,
+        "elevated_surfaces": elevated,
+    }
+
+
+def classify_agent_trust_status(
+    *,
+    enabled: bool,
+    current: dict[str, Any],
+    trusted: dict[str, Any] | None,
+    global_trust_status: str,
+) -> str:
+    if not enabled:
+        return "disabled"
+    if global_trust_status == "missing":
+        return "untrusted"
+    if global_trust_status == "invalid":
+        return "unknown"
+    if global_trust_status == "config_changed":
+        return "config_changed"
+    if trusted is None:
+        return "unpinned"
+    if trusted.get("path") != current.get("path"):
+        return "path_drift"
+    trusted_hash = trusted.get("sha256")
+    current_hash = current.get("sha256")
+    if trusted_hash and current_hash and trusted_hash != current_hash:
+        return "hash_drift"
+    trusted_version = trusted.get("version")
+    current_version = current.get("version")
+    if trusted_version and current_version and trusted_version != current_version:
+        return "version_drift"
+    if current.get("path") is None:
+        return "missing_binary"
+    return "ok"
+
+
+def string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def print_security_report(report: dict[str, Any]) -> None:
+    trust = report["trust"]
+    config = report["config"]
+    style = "green"
+    if trust["status"] in {"missing", "invalid", "config_changed"}:
+        style = "red"
+    elif trust["status"] != "trusted":
+        style = "yellow"
+
+    console.print("[bold]councli security[/]")
+    console.print(f"Config: {config['path']}")
+    console.print(f"Trust:  {trust['path']}")
+    console.print(f"Status: [{style}]{trust['status']}[/]")
+    console.print(f"Config hash: {short_hash(config['executable_hash'])}")
+    if config["validation"]["status"] != "ok":
+        console.print(f"[red]Config validation:[/] {config['validation']['error']}")
+    if trust.get("error"):
+        console.print(f"[red]Trust error:[/] {trust['error']}")
+
+    table = Table(title="Trusted agent surface")
+    table.add_column("Agent")
+    table.add_column("Enabled")
+    table.add_column("Binary")
+    table.add_column("Version")
+    table.add_column("Trust")
+    table.add_column("Elevated")
+    table.add_column("Path")
+    for agent in report["agents"]:
+        trust_status = agent["trust_status"]
+        trust_style = "green" if trust_status == "ok" else "yellow"
+        if trust_status in {"config_changed", "path_drift", "hash_drift", "unknown", "untrusted"}:
+            trust_style = "red"
+        current = agent["current"]
+        table.add_row(
+            agent["agent"],
+            str(agent["enabled"]),
+            str(agent.get("binary") or "-"),
+            current.get("version") or f"({current.get('version_status') or 'not_checked'})",
+            f"[{trust_style}]{trust_status}[/]",
+            ", ".join(agent["elevated_surfaces"]) or "-",
+            current.get("path") or "-",
+        )
+    console.print(table)
+
+    native = report["native"]
+    console.print(
+        "[dim]Native sessions:[/] "
+        f"tmux_socket={native['tmux_socket']} "
+        f"session_prefix={native['session_prefix']} "
+        f"raw_log_max_bytes={native['raw_log_max_bytes']} "
+        f"raw_log_backups={native['raw_log_backups']}"
+    )
+    if trust["status"] != "trusted":
+        console.print("[dim]Review drift before running `councli trust`.[/]")
+
+
+def short_hash(value: str | None, *, length: int = 12) -> str:
+    if not value:
+        return "-"
+    return value[:length]
 
 
 def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[str, Any]]:

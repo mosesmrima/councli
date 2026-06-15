@@ -1920,6 +1920,100 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("Python", alpha["version"])
             self.assertEqual(alpha["version_command"], [PYTHON, "--version"])
 
+    def test_security_json_reports_trust_and_versions_without_running_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["version_command"] = [PYTHON, "--version"]
+            raw["agents"]["alpha"]["start_capabilities"] = [
+                "reads_workspace",
+                "writes_workspace",
+                "runs_tools",
+                "full_permission",
+            ]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            trust_project_config(root, reason="test", repair_identity=True)
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "security", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["trust"]["status"], "trusted")
+            self.assertTrue(data["trust"]["config_trusted"])
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertEqual(alpha["trust_status"], "ok")
+            self.assertEqual(alpha["current"]["version_status"], "ok")
+            self.assertIn("Python", alpha["current"]["version"])
+            self.assertIn("native_start", alpha["elevated_surfaces"])
+
+    def test_security_json_reports_binary_drift_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            bin_one = Path(tmp) / "bin-one"
+            bin_two = Path(tmp) / "bin-two"
+            bin_one.mkdir()
+            bin_two.mkdir()
+            for directory, version in ((bin_one, "one"), (bin_two, "two")):
+                tool = directory / "fake-agent"
+                tool.write_text(
+                    "#!/bin/sh\n"
+                    "if [ \"$1\" = \"--version\" ]; then echo fake-agent "
+                    + version
+                    + "; exit 0; fi\n"
+                    "echo fake agent "
+                    + version
+                    + "\n",
+                    encoding="utf-8",
+                )
+                tool.chmod(0o755)
+
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["binary"] = "fake-agent"
+            raw["agents"]["alpha"]["command"] = ["fake-agent", "{prompt}"]
+            raw["agents"]["alpha"]["broadcast_command"] = ["fake-agent", "{prompt}"]
+            raw["agents"]["alpha"]["version_command"] = ["fake-agent", "--version"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            trust_env = os.environ.copy()
+            trust_env["PATH"] = f"{bin_one}{os.pathsep}{trust_env.get('PATH', '')}"
+            trusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=trust_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
+
+            drift_env = os.environ.copy()
+            drift_env["PATH"] = f"{bin_two}{os.pathsep}{drift_env.get('PATH', '')}"
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "security", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                env=drift_env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["trust"]["status"], "trusted_with_binary_drift")
+            self.assertIn("alpha", data["trust"]["binary_drift_agents"])
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertEqual(alpha["trust_status"], "path_drift")
+            self.assertIn("fake-agent two", alpha["current"]["version"])
+            self.assertIn("fake-agent one", alpha["trusted"]["version"])
+
     def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")

@@ -204,11 +204,13 @@ Current controls:
 - trust pins command templates, resolved executable paths, executable SHA-256
   hashes, and version metadata for enabled agents;
 - load-time trust checks reject resolved binary path or content-hash drift until
-  the user reviews and reruns `councli trust`.
+  the user reviews and reruns `councli trust`;
+- `councli security` reports the trusted command surface, current binary paths,
+  version metadata, elevated command surfaces, and path/hash/version drift
+  without running agent prompts.
 
 Hardening:
 
-- improve binary version reporting in human security summaries;
 - allow absolute command paths in trusted config;
 - show binary path in `doctor` and security reports.
 

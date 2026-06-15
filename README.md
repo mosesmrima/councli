@@ -19,6 +19,8 @@ The first version is intentionally simple:
 - Packet-file prompts, response sidecars, run-local locks, and blackboard
   projections for inspectable collaboration.
 - Packaged JSON Schemas under `councli.schemas` for protocol artifacts.
+- Security reporting for trusted command fields, binary path/hash/version drift,
+  and elevated command surfaces.
 - Native attach mode: use each assistant's own TUI without `councli`
   intercepting slash commands or permission prompts.
 - Read-only broadcast mode for comparing answers across assistants.
@@ -298,6 +300,9 @@ prints the paths to its blackboard, machine state, event log, and artifacts.
 projections before you trust, export, or share the output.
 `recover` rebuilds `state.json` and `blackboard.md` from the run's event log
 and artifacts, then verifies the rebuilt projections.
+`security` prints the trusted command surface, resolved binaries, version
+metadata, and drift status without running agent prompts, so it can diagnose
+trust failures that would block `doctor`.
 `artifacts scrub` redacts common secret-looking tokens from text artifacts and
 defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
 and snapshots by default, and only deletes when `--delete` is supplied.

@@ -485,7 +485,9 @@ Treat the system as not production-grade until these gates pass:
    schemas and richer payload-specific schemas.
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
-8. Add binary version reporting to human security summaries.
+8. Add binary version reporting to human security summaries. Done for
+   `councli security`; continue folding the same view into any future support
+   bundle/export flow.
 9. Continue expanding canceled-state recording beyond shared turns and
    experimental run phases.
 10. Keep improving bounded context packing with durable summaries, and extend
