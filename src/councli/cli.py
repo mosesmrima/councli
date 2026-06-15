@@ -250,11 +250,16 @@ def trust(
 def doctor(
     root: RootOpt = Path.cwd(),
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable readiness JSON.")] = False,
+    include_security: Annotated[
+        bool,
+        typer.Option("--security", help="Include trusted command, binary drift, and elevated-surface summary."),
+    ] = False,
 ) -> None:
     """Check configured agent availability."""
     config = load_config(root, auto_init=True, quiet=json_output)
     runners = build_runners(config.agents)
     records: list[dict[str, Any]] = []
+    security_report = build_security_report(root) if include_security else None
 
     table = Table(title="councli doctor")
     table.add_column("Agent")
@@ -305,10 +310,16 @@ def doctor(
         )
 
     if json_output:
-        console.print_json(data={"config": str(project_config_path(root)), "agents": records})
+        data: dict[str, Any] = {"config": str(project_config_path(root)), "agents": records}
+        if security_report is not None:
+            data["security"] = security_report
+        console.print_json(data=data)
         return
     console.print(table)
     console.print(f"Config: {project_config_path(root)}")
+    if security_report is not None:
+        console.print("")
+        print_security_report(security_report)
 
 
 @app.command()

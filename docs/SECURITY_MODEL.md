@@ -211,7 +211,9 @@ Current controls:
   the user reviews and reruns `councli trust`;
 - `councli security` reports the trusted command surface, current binary paths,
   version metadata, elevated command surfaces, and path/hash/version drift
-  without running agent prompts.
+  without running agent prompts;
+- `councli doctor --security` embeds the same security summary beside the normal
+  readiness report when the config is already trusted.
 
 Hardening:
 

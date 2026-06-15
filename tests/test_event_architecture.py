@@ -2191,6 +2191,34 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(alpha["intents"]["deliberate"]["ready"])
             self.assertTrue(alpha["intents"]["vote"]["ready"])
 
+    def test_doctor_can_include_security_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            json_proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json", "--security"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(json_proc.returncode, 0, json_proc.stdout + json_proc.stderr)
+            data = json.loads(json_proc.stdout)
+            self.assertEqual(data["security"]["trust"]["status"], "trusted")
+            self.assertIn("config", data["security"])
+            self.assertIn("agents", data["security"])
+            self.assertIn("agents", data)
+
+            human_proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--security"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(human_proc.returncode, 0, human_proc.stdout + human_proc.stderr)
+            self.assertIn("councli doctor", human_proc.stdout)
+            self.assertIn("councli security", human_proc.stdout)
+
     def test_doctor_json_reports_version_and_capability_gated_intents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(tmp)

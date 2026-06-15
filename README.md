@@ -302,7 +302,8 @@ projections before you trust, export, or share the output.
 and artifacts, then verifies the rebuilt projections.
 `security` prints the trusted command surface, resolved binaries, version
 metadata, and drift status without running agent prompts, so it can diagnose
-trust failures that would block `doctor`.
+trust failures that would block `doctor`. Use `doctor --security` when you want
+the same security summary beside normal readiness checks.
 `artifacts scrub` redacts common secret-looking tokens from text artifacts and
 defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
 and snapshots by default, and only deletes when `--delete` is supplied.
