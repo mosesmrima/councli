@@ -306,6 +306,9 @@ trust failures that would block `doctor`.
 `artifacts scrub` redacts common secret-looking tokens from text artifacts and
 defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
 and snapshots by default, and only deletes when `--delete` is supplied.
+`artifacts export` creates a redacted `.tar.gz` support bundle with a manifest.
+It exports run/task/ledger/snapshot artifacts by default and excludes raw
+terminal recordings unless you explicitly choose that artifact class.
 
 Interactive councli shell:
 

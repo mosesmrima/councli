@@ -4,12 +4,14 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import shlex
 import sys
+import tarfile
 import time
 from pathlib import Path
 from typing import Annotated, Any
@@ -107,6 +109,7 @@ ARTIFACT_ROOTS = {
     "task": ("tasks",),
     "project-ledger": ("ledger",),
 }
+EXPORT_DEFAULT_CLASSES = ("run", "task", "project-ledger", "session-snapshot")
 COUNCLI_MASCOT = r"""
      .----------------.
    .'  codex  claude  '.
@@ -1664,6 +1667,113 @@ def artifacts_prune(
     console.print(f"[green]Deleted:[/] {len(candidates)} artifact(s), {format_bytes(sum(candidate.bytes for candidate in candidates))}")
 
 
+@artifacts_app.command("export")
+def artifacts_export(
+    root: RootOpt = Path.cwd(),
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Write the support bundle to this .tar.gz path.", dir_okay=False),
+    ] = None,
+    artifact_class: Annotated[
+        list[str] | None,
+        typer.Option("--class", "-k", help="Artifact class to export. Repeat to choose multiple."),
+    ] = None,
+    redacted: Annotated[
+        bool,
+        typer.Option("--redacted/--unredacted", help="Redact configured secret patterns before writing the bundle."),
+    ] = True,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing output file.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be exported without writing a bundle.")] = False,
+) -> None:
+    """Create a redacted support bundle from local councli artifacts."""
+    config = load_config(root)
+    classes = normalize_artifact_classes(artifact_class, default=EXPORT_DEFAULT_CLASSES)
+    candidates = collect_artifact_files(root, classes=classes, max_file_bytes=None)
+    patterns = [re.compile(pattern) for pattern in config.artifacts.redact_patterns]
+    destination = output or default_artifact_export_path(root)
+    manifest = build_artifact_export_manifest(
+        root=root,
+        candidates=candidates,
+        classes=classes,
+        destination=destination,
+        redacted=redacted,
+        max_redaction_bytes=config.artifacts.scrub_max_file_bytes,
+    )
+
+    if dry_run:
+        print_artifact_table("Artifacts to export", candidates)
+        console.print(f"[green]Would export:[/] {len(candidates)} artifact(s) to {destination}")
+        console.print(f"[dim]Redacted:[/] {redacted}")
+        return
+    if destination.exists() and not force:
+        console.print(f"[red]Output already exists:[/] {destination}")
+        console.print("[dim]Use --force to overwrite it.[/]")
+        raise typer.Exit(code=2)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    included = 0
+    skipped = 0
+    redaction_matches = 0
+    with tarfile.open(destination, "w:gz") as archive:
+        for candidate in candidates:
+            payload = read_export_payload(
+                candidate,
+                redacted=redacted,
+                patterns=patterns,
+                replacement=config.artifacts.redact_replacement,
+                max_redaction_bytes=config.artifacts.scrub_max_file_bytes,
+            )
+            entry = export_manifest_entry(root, candidate)
+            if payload["skipped"]:
+                entry["skipped"] = payload["reason"]
+                manifest["skipped"].append(entry)
+                skipped += 1
+                continue
+            entry["bytes"] = len(payload["content"])
+            entry["redaction_matches"] = payload["matches"]
+            manifest["files"].append(entry)
+            redaction_matches += payload["matches"]
+            add_bytes_to_tar(
+                archive,
+                archive_name=entry["archive_path"],
+                content=payload["content"],
+                modified_at=candidate.modified_at,
+            )
+            included += 1
+        manifest["summary"] = {
+            "included_files": included,
+            "skipped_files": skipped,
+            "redaction_matches": redaction_matches,
+            "bytes": sum(item["bytes"] for item in manifest["files"]),
+        }
+        add_bytes_to_tar(
+            archive,
+            archive_name="councli-artifacts/manifest.json",
+            content=(json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            modified_at=datetime.now(timezone.utc),
+        )
+
+    append_project_event(
+        root,
+        "artifacts.exported",
+        payload={
+            "path": str(destination),
+            "classes": classes,
+            "redacted": redacted,
+            "included_files": included,
+            "skipped_files": skipped,
+            "redaction_matches": redaction_matches,
+        },
+    )
+    console.print(
+        f"[green]Exported:[/] {included} file(s), {format_bytes(destination.stat().st_size)} -> {destination}"
+    )
+    if skipped:
+        console.print(f"[yellow]Skipped:[/] {skipped} binary, unreadable, or oversized file(s)")
+    if redaction_matches:
+        console.print(f"[green]Redacted:[/] {redaction_matches} match(es)")
+
+
 def normalize_artifact_classes(values: list[str] | None, *, default: tuple[str, ...] | list[str]) -> list[str]:
     selected = list(default if not values else values)
     invalid = sorted(set(selected) - set(ARTIFACT_CLASSES))
@@ -1722,6 +1832,110 @@ def artifact_candidate(kind: str, path: Path) -> ArtifactCandidate:
         size = 0
         modified_at = datetime.fromtimestamp(0, timezone.utc)
     return ArtifactCandidate(kind=kind, path=path, bytes=size, modified_at=modified_at, is_dir=path.is_dir())
+
+
+def default_artifact_export_path(root: Path) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return root / ".councli" / "exports" / f"{timestamp}-councli-artifacts.tar.gz"
+
+
+def build_artifact_export_manifest(
+    *,
+    root: Path,
+    candidates: list[ArtifactCandidate],
+    classes: list[str],
+    destination: Path,
+    redacted: bool,
+    max_redaction_bytes: int,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "councli.artifacts.export.v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "root": str(root.resolve()),
+        "destination": str(destination),
+        "classes": classes,
+        "redacted": redacted,
+        "max_redaction_bytes": max_redaction_bytes,
+        "candidate_files": len(candidates),
+        "files": [],
+        "skipped": [],
+        "summary": {
+            "included_files": 0,
+            "skipped_files": 0,
+            "redaction_matches": 0,
+            "bytes": 0,
+        },
+    }
+
+
+def read_export_payload(
+    candidate: ArtifactCandidate,
+    *,
+    redacted: bool,
+    patterns: list[re.Pattern[str]],
+    replacement: str,
+    max_redaction_bytes: int,
+) -> dict[str, Any]:
+    try:
+        content = candidate.path.read_bytes()
+    except OSError:
+        return {"skipped": True, "reason": "unreadable", "content": b"", "matches": 0}
+    if not redacted:
+        return {"skipped": False, "reason": None, "content": content, "matches": 0}
+    if len(content) > max_redaction_bytes:
+        return {"skipped": True, "reason": "oversized_for_redaction", "content": b"", "matches": 0}
+    if b"\x00" in content:
+        return {"skipped": True, "reason": "binary", "content": b"", "matches": 0}
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"skipped": True, "reason": "non_utf8", "content": b"", "matches": 0}
+    redacted_text, matches = redact_text(text, patterns=patterns, replacement=replacement)
+    return {
+        "skipped": False,
+        "reason": None,
+        "content": redacted_text.encode("utf-8"),
+        "matches": matches,
+    }
+
+
+def export_manifest_entry(root: Path, candidate: ArtifactCandidate) -> dict[str, Any]:
+    archive_path = export_archive_path(root, candidate.path)
+    return {
+        "class": candidate.kind,
+        "source": str(candidate.path),
+        "source_relative": source_relative_to_councli(root, candidate.path),
+        "archive_path": archive_path,
+        "modified_at": candidate.modified_at.isoformat(),
+    }
+
+
+def source_relative_to_councli(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root / ".councli").as_posix()
+    except ValueError:
+        return path.name
+
+
+def export_archive_path(root: Path, path: Path) -> str:
+    relative = source_relative_to_councli(root, path)
+    parts = [part for part in Path(relative).parts if part not in ("", ".", "..")]
+    safe_relative = Path(*parts).as_posix() if parts else path.name
+    return f"councli-artifacts/{safe_relative}"
+
+
+def add_bytes_to_tar(
+    archive: tarfile.TarFile,
+    *,
+    archive_name: str,
+    content: bytes,
+    modified_at: datetime,
+) -> None:
+    info = tarfile.TarInfo(archive_name)
+    info.size = len(content)
+    info.mtime = int(modified_at.timestamp())
+    info.mode = 0o600
+    archive.addfile(info, io.BytesIO(content))
 
 
 def directory_size(path: Path) -> int:

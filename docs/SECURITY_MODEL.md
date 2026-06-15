@@ -180,15 +180,19 @@ Current controls:
 - `.councli/` is added to `.gitignore` for git repos;
 - raw logs use private file modes where possible;
 - raw logs rotate by size;
-- task briefs warn that raw logs are diagnostic, not authoritative.
+- task briefs warn that raw logs are diagnostic, not authoritative;
+- `artifacts scrub` redacts configured secret patterns in place after an
+  explicit `--write`;
+- `artifacts export` creates a redacted support bundle with a manifest and does
+  not include raw terminal recordings unless that artifact class is explicitly
+  selected.
 
 Hardening:
 
-- add `councli scrub` for artifact redaction;
 - add configurable retention policies for runs, blobs, raw logs, and snapshots;
 - add built-in secret pattern detection before printing or exporting artifacts;
 - default raw logs to opt-in for shared/team environments;
-- support `councli export --redacted`.
+- keep expanding support-bundle coverage as new artifact classes are added.
 
 ### PATH and binary substitution
 

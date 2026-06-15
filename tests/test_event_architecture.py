@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -2236,6 +2237,61 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(delete_prune.returncode, 0, delete_prune.stdout + delete_prune.stderr)
             self.assertIn("Deleted", delete_prune.stdout)
             self.assertFalse(archive.exists())
+
+    def test_artifacts_export_creates_redacted_support_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            secret = "sk-proj-" + ("C" * 28)
+            raw_log = root / ".councli" / "session-recordings" / "alpha.raw.log"
+            raw_log.parent.mkdir(parents=True)
+            raw_log.write_text(f"raw token={secret}\n", encoding="utf-8")
+            run_dir = root / ".councli" / "runs" / "export-run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "blackboard.md").write_text(f"safe line\nsecret={secret}\n", encoding="utf-8")
+            output = Path(tmp) / "support.tar.gz"
+
+            proc = subprocess.run(
+                [
+                    PYTHON,
+                    "-m",
+                    "councli",
+                    "artifacts",
+                    "export",
+                    "-C",
+                    str(root),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertTrue(output.exists())
+            with tarfile.open(output, "r:gz") as archive:
+                names = archive.getnames()
+                self.assertIn("councli-artifacts/manifest.json", names)
+                self.assertIn("councli-artifacts/runs/export-run/blackboard.md", names)
+                self.assertFalse(any(name.startswith("councli-artifacts/session-recordings/") for name in names))
+                manifest_file = archive.extractfile("councli-artifacts/manifest.json")
+                blackboard_file = archive.extractfile("councli-artifacts/runs/export-run/blackboard.md")
+                self.assertIsNotNone(manifest_file)
+                self.assertIsNotNone(blackboard_file)
+                manifest = json.loads(manifest_file.read().decode("utf-8"))
+                blackboard = blackboard_file.read().decode("utf-8")
+                all_payload = b"".join(
+                    archive.extractfile(name).read()
+                    for name in names
+                    if archive.getmember(name).isfile()
+                )
+
+            self.assertEqual(manifest["schema_version"], "councli.artifacts.export.v1")
+            self.assertTrue(manifest["redacted"])
+            self.assertGreaterEqual(manifest["summary"]["redaction_matches"], 1)
+            self.assertIn("[REDACTED]", blackboard)
+            self.assertNotIn(secret.encode("utf-8"), all_payload)
 
     def test_doctor_json_is_pure_json_on_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
