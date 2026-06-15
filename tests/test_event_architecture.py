@@ -28,6 +28,7 @@ from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, tru
 from councli.council import decide_council, decide_review, empty_review, empty_vote, next_executor, parse_review, run_blackboard_council
 from councli.events import EventLedger, read_events
 from councli.gitops import create_worktree, diff
+from councli.schema import load_schema, validate_json_schema_subset
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +206,35 @@ class EventArchitectureTests(unittest.TestCase):
         )
         latest = max((root / ".councli" / "runs").iterdir(), key=lambda path: path.name)
         return proc, latest
+
+    def test_packaged_protocol_schemas_validate_basic_shapes(self) -> None:
+        response_schema = load_schema("response")
+        errors = validate_json_schema_subset(
+            {
+                "schema_version": "councli.response.v1",
+                "id": "resp_test",
+                "request_id": "turn_test",
+                "kind": "participant.response",
+                "participant": "alpha",
+                "intent": "chat",
+                "round": 1,
+                "status": "ok",
+                "body_ref": "shared/chat.round1/alpha.md",
+                "summary": "ok",
+                "continue": False,
+                "recommend": "none",
+                "vote": None,
+                "failure_class": "",
+                "exit_code": 0,
+                "duration_seconds": 0.1,
+                "command": ["fake", "{prompt}"],
+            },
+            response_schema,
+        )
+        self.assertEqual(errors, [])
+
+        invalid = validate_json_schema_subset({"schema_version": "wrong"}, response_schema)
+        self.assertTrue(any("schema_version" in error for error in invalid))
 
     def test_event_ledger_renders_state_and_blackboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1296,6 +1326,37 @@ class EventArchitectureTests(unittest.TestCase):
             report = json.loads(corrupted.stdout)
             self.assertFalse(report["ok"])
             self.assertTrue(any("sidecar missing" in error or "ref sidecar missing" in error for error in report["errors"]))
+
+    def test_verify_rejects_response_sidecar_schema_type_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="hello\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            run_dir = [path for path in sorted((root / ".councli" / "runs").iterdir()) if path.name.endswith("-chat")][-1]
+            sidecar_path = run_dir / "shared" / "chat.round1" / "alpha.response.json"
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            sidecar["round"] = "one"
+            sidecar_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            verified = subprocess.run(
+                [PYTHON, "-m", "councli", "verify", run_dir.name, "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(verified.returncode, 2, verified.stdout + verified.stderr)
+            report = json.loads(verified.stdout)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("violates response.schema.json" in error and "$.round" in error for error in report["errors"]))
 
     def test_recover_rebuilds_from_valid_event_prefix_when_log_tail_is_malformed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

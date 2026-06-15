@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/participants.schema.json",
+  "title": "councli participant snapshot",
+  "type": "object",
+  "required": ["schema_version", "request_id", "kind", "intent", "participants"],
+  "properties": {
+    "schema_version": { "enum": ["councli.participants.v1"] },
+    "request_id": { "type": "string" },
+    "kind": { "enum": ["participant.snapshot"] },
+    "intent": { "type": "string" },
+    "participants": {
+      "type": "object",
+      "additionalProperties": { "type": "object" }
+    }
+  }
+}

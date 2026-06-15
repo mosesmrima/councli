@@ -72,6 +72,7 @@ from councli.native import (
     latest_task_brief,
 )
 from councli.protocol import render_result, run_executor
+from councli.schema import load_schema, validate_json_schema_subset
 
 
 app = typer.Typer(
@@ -3815,6 +3816,7 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
             warnings.append(f"event {event_id or index} missing schema_version")
         elif schema_version != EVENT_SCHEMA_VERSION:
             errors.append(f"event {event_id or index} has unsupported schema_version: {schema_version!r}")
+        errors.extend(validate_protocol_schema(event, rel=f"event {event_id or index}", schema_name="event"))
         refs = event.get("refs") if isinstance(event.get("refs"), dict) else {}
         for key, value in refs.items():
             if value is None:
@@ -3831,12 +3833,12 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
                 errors.append(f"event {event_id or index} ref {key} missing: {value}")
 
     schema_artifacts = [
-        ("request.json", REQUEST_SCHEMA_VERSION, {"turn.request"}),
-        ("participants.json", PARTICIPANTS_SCHEMA_VERSION, {"participant.snapshot"}),
-        ("decision.json", DECISION_SCHEMA_VERSION, {"council.decision"}),
-        ("decisions/vote.json", DECISION_SCHEMA_VERSION, {"vote.decision"}),
+        ("request.json", REQUEST_SCHEMA_VERSION, {"turn.request"}, "request"),
+        ("participants.json", PARTICIPANTS_SCHEMA_VERSION, {"participant.snapshot"}, "participants"),
+        ("decision.json", DECISION_SCHEMA_VERSION, {"council.decision"}, "decision"),
+        ("decisions/vote.json", DECISION_SCHEMA_VERSION, {"vote.decision"}, "decision"),
     ]
-    for rel, expected_schema, allowed_kinds in schema_artifacts:
+    for rel, expected_schema, allowed_kinds, schema_name in schema_artifacts:
         path = run_dir / rel
         if not path.exists():
             continue
@@ -3853,6 +3855,7 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
         )
         errors.extend(artifact_errors)
         warnings.extend(artifact_warnings)
+        errors.extend(validate_protocol_schema(artifact, rel=rel, schema_name=schema_name))
 
     for path in sorted((run_dir / "votes").glob("*.json")):
         rel = path.relative_to(run_dir).as_posix()
@@ -3869,6 +3872,7 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
         )
         errors.extend(artifact_errors)
         warnings.extend(artifact_warnings)
+        errors.extend(validate_protocol_schema(artifact, rel=rel, schema_name="vote"))
 
     for path in sorted((run_dir / "reviews").glob("attempt-*/*.json")):
         rel = path.relative_to(run_dir).as_posix()
@@ -3887,6 +3891,13 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
         )
         errors.extend(artifact_errors)
         warnings.extend(artifact_warnings)
+        errors.extend(
+            validate_protocol_schema(
+                artifact,
+                rel=rel,
+                schema_name="decision" if path.name == "decision.json" else "review",
+            )
+        )
 
     sidecar_paths = sorted(run_dir.rglob("*.response.json"))
     for path in sidecar_paths:
@@ -3897,6 +3908,7 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             errors.append(f"could not parse sidecar {rel}: {exc}")
             continue
+        errors.extend(validate_protocol_schema(sidecar, rel=rel, schema_name="response"))
         errors.extend(validate_response_sidecar(run_dir, sidecar, rel))
 
     if sidecars_checked == 0 and any((event.get("payload") or {}).get("mode") == "shared_turn" for event in events):
@@ -3963,6 +3975,14 @@ def safe_event_ref(run_dir: Path, value: str) -> Path | None:
     except ValueError:
         return None
     return resolved
+
+
+def validate_protocol_schema(artifact: Any, *, rel: str, schema_name: str) -> list[str]:
+    schema = load_schema(schema_name)
+    return [
+        f"{rel} violates {schema_name}.schema.json: {message}"
+        for message in validate_json_schema_subset(artifact, schema)
+    ]
 
 
 def validate_schema_artifact(

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/request.schema.json",
+  "title": "councli turn request",
+  "type": "object",
+  "required": ["schema_version", "id", "kind", "task", "root", "mode", "intent", "dry_run"],
+  "properties": {
+    "schema_version": { "enum": ["councli.request.v1"] },
+    "id": { "type": "string" },
+    "kind": { "enum": ["turn.request"] },
+    "task": { "type": "string" },
+    "root": { "type": "string" },
+    "mode": { "type": "string" },
+    "intent": { "type": "string" },
+    "dry_run": { "type": "boolean" }
+  }
+}

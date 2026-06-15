@@ -76,8 +76,8 @@ The repository has the right design direction in documentation:
 The implementation is still MVP-grade in several places:
 
 - `AgentRunner.health()` mostly proves binary presence, not intent readiness.
-- Shared turns still parse `COUNCLI_TRAILER` text as a fallback; response
-  sidecars exist but need stricter validation before every machine decision.
+- Shared turns still parse `COUNCLI_TRAILER` text as a fallback; packaged JSON
+  Schema files and stricter sidecar checks now cover the main run artifacts.
 - The blackboard renderer still privileges legacy phases.
 - Failure classification is normalized across run and readiness failures, but
   still mostly derives from CLI text heuristics.
@@ -461,7 +461,7 @@ Treat the system as not production-grade until these gates pass:
 4. Binary path and executable hash drift after trust are detected; trust pins
    record stable version metadata.
 5. Keep expanding participant response and decision-artifact validation beyond
-   the current schema/version/kind checks.
+   the current packaged schema and path/provenance checks.
 6. Review, executor selection, and apply reject missing or invalid machine
    decision artifacts.
 7. Run event writes use cross-process `fcntl.flock`.
@@ -481,7 +481,8 @@ Treat the system as not production-grade until these gates pass:
 3. Add intent-specific readiness model and `doctor --json`.
 4. Add response sidecars for shared turns while retaining `COUNCLI_TRAILER` as
    fallback.
-5. Keep tightening sidecar and decision-artifact validation with formal schemas.
+5. Keep tightening sidecar and decision-artifact validation with packaged
+   schemas and richer payload-specific schemas.
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add binary version reporting to human security summaries.

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/vote.schema.json",
+  "title": "councli vote",
+  "type": "object",
+  "required": ["schema_version", "kind", "valid", "preferred_plan", "preferred_executor", "confidence"],
+  "properties": {
+    "schema_version": { "enum": ["councli.vote.v1"] },
+    "kind": { "enum": ["council.vote"] },
+    "valid": { "type": "boolean" },
+    "preferred_plan": { "type": "string" },
+    "preferred_executor": { "type": "string" },
+    "confidence": { "type": "number" },
+    "blocking_concerns": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "reason": { "type": "string" },
+    "abstained": { "type": "boolean" }
+  }
+}

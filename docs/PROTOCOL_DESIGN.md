@@ -21,9 +21,9 @@ The current implementation already has useful pieces:
 
 The main protocol gaps are also clear:
 
-- shared-turn trailers are still parsed as fallback text; response and
-  decision-artifact validation exists for key machine decisions, but formal
-  schemas still need to replace version/kind checks;
+- shared-turn trailers are still parsed as fallback text; packaged JSON Schema
+  files now define the main protocol artifacts, and `verify` applies those
+  schemas alongside path/projection checks;
 - the blackboard renderer still treats legacy phases as the primary structure;
 - participant failure classification is mostly stderr-text heuristics;
 - broadcast capability is represented by a boolean rather than a permission
@@ -337,8 +337,8 @@ Current events are close to the target. Implemented baseline:
   single-writer projection step;
 - store `schema_version` in each event.
 
-Remaining work: validate every event payload against typed schemas as those
-schemas stabilize.
+Remaining work: validate every event payload beyond the shared envelope fields
+as those payload schemas stabilize.
 
 Target event:
 
@@ -559,9 +559,10 @@ Participant unavailable:
 5. Add normalized failure classification.
 6. Keep `/vote` decisions in `decisions/vote.json`, and reject invalid vote,
    review, executor-selection, or apply decision artifacts.
-7. Add adapter capability metadata.
-8. Add SQLite WAL index only after run-local locking and sidecars are stable.
-9. Add optional JSON-RPC/Unix-socket daemon only if the interactive shell needs
+7. Add packaged JSON Schema files and use them in `councli verify`.
+8. Add adapter capability metadata.
+9. Add SQLite WAL index only after run-local locking and sidecars are stable.
+10. Add optional JSON-RPC/Unix-socket daemon only if the interactive shell needs
    background jobs, streaming UI, or external integrations.
 
 ## Research references

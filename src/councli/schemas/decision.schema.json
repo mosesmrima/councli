@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/decision.schema.json",
+  "title": "councli decision",
+  "type": "object",
+  "required": ["schema_version", "kind"],
+  "properties": {
+    "schema_version": { "enum": ["councli.decision.v1"] },
+    "kind": { "enum": ["council.decision", "vote.decision", "review.decision"] },
+    "status": { "type": "string" },
+    "approved": { "type": "boolean" },
+    "verdict": { "type": "string" }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/event.schema.json",
+  "title": "councli event",
+  "type": "object",
+  "required": ["schema_version", "seq", "event_id", "ts", "type", "status", "payload", "refs"],
+  "properties": {
+    "schema_version": { "enum": ["councli.event.v1"] },
+    "seq": { "type": "integer" },
+    "event_id": { "type": "string" },
+    "ts": { "type": "string" },
+    "type": { "type": "string" },
+    "phase": { "type": ["string", "null"] },
+    "participant": { "type": ["string", "null"] },
+    "status": { "type": "string" },
+    "payload": { "type": "object" },
+    "refs": { "type": "object" }
+  }
+}

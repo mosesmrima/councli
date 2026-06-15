@@ -18,6 +18,7 @@ The first version is intentionally simple:
   commands for stronger coordination.
 - Packet-file prompts, response sidecars, run-local locks, and blackboard
   projections for inspectable collaboration.
+- Packaged JSON Schemas under `councli.schemas` for protocol artifacts.
 - Native attach mode: use each assistant's own TUI without `councli`
   intercepting slash commands or permission prompts.
 - Read-only broadcast mode for comparing answers across assistants.

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/response.schema.json",
+  "title": "councli participant response",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "request_id",
+    "kind",
+    "participant",
+    "intent",
+    "round",
+    "status",
+    "body_ref",
+    "summary",
+    "continue",
+    "recommend",
+    "failure_class",
+    "exit_code",
+    "duration_seconds",
+    "command"
+  ],
+  "properties": {
+    "schema_version": { "enum": ["councli.response.v1"] },
+    "id": { "type": "string" },
+    "request_id": { "type": "string" },
+    "kind": { "enum": ["participant.response", "synthesis.response"] },
+    "participant": { "type": "string" },
+    "intent": { "type": "string" },
+    "round": { "type": "integer" },
+    "status": { "enum": ["ok", "failed", "skipped"] },
+    "body_ref": { "type": "string" },
+    "summary": { "type": "string" },
+    "continue": { "type": "boolean" },
+    "recommend": { "type": "string" },
+    "vote": { "type": ["object", "null"] },
+    "failure_class": { "type": "string" },
+    "exit_code": { "type": ["integer", "null"] },
+    "duration_seconds": { "type": "number" },
+    "command": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

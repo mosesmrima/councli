@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://councli.local/schemas/review.schema.json",
+  "title": "councli review verdict",
+  "type": "object",
+  "required": ["schema_version", "kind", "valid", "verdict", "confidence", "blocking_concerns"],
+  "properties": {
+    "schema_version": { "enum": ["councli.review.v1"] },
+    "kind": { "enum": ["review.verdict"] },
+    "valid": { "type": "boolean" },
+    "verdict": { "type": "string" },
+    "confidence": { "type": "number" },
+    "blocking_concerns": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "reason": { "type": "string" },
+    "abstained": { "type": "boolean" }
+  }
+}
