@@ -265,6 +265,74 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("PLAN\n- keep it simple", blackboard)
             self.assertIn("## Run Canceled", blackboard)
 
+    def test_metrics_reports_events_sidecar_durations_and_artifact_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            run_dir = root / ".councli" / "runs" / "metrics-run"
+            sidecar_path = run_dir / "shared" / "chat.round1" / "alpha.response.json"
+            sidecar_path.parent.mkdir(parents=True)
+            sidecar_path.write_text(
+                json.dumps({"duration_seconds": 1.25, "failure_class": ""}),
+                encoding="utf-8",
+            )
+            raw_log = root / ".councli" / "session-recordings" / "alpha.raw.log"
+            raw_log.parent.mkdir(parents=True)
+            raw_log.write_text("terminal output\n", encoding="utf-8")
+            ledger = EventLedger(run_dir, run_id="metrics-run")
+            ledger.append("run.started", payload={"task": "hello", "mode": "shared_turn", "intent": "chat"})
+            ledger.append(
+                "response.received",
+                phase="chat.round1",
+                participant="alpha",
+                status="ok",
+                refs={"sidecar": "shared/chat.round1/alpha.response.json"},
+                payload={"mode": "shared_turn", "intent": "chat", "failure_class": ""},
+            )
+            ledger.append(
+                "response.received",
+                phase="chat.round1",
+                participant="beta",
+                status="failed",
+                payload={"mode": "shared_turn", "intent": "chat", "failure_class": "auth_required"},
+            )
+            ledger.append("run.completed", payload={"mode": "shared_turn", "intent": "chat"})
+            ledger.render()
+            metrics_path = Path(tmp) / "metrics.prom"
+
+            proc = subprocess.run(
+                [
+                    PYTHON,
+                    "-m",
+                    "councli",
+                    "metrics",
+                    "-C",
+                    str(root),
+                    "--json",
+                    "--openmetrics-output",
+                    str(metrics_path),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["schema_version"], "councli.metrics.v1")
+            self.assertEqual(data["runs"]["total"], 1)
+            self.assertIn({"intent": "chat", "status": "completed", "count": 1}, data["turns_total"])
+            alpha = next(item for item in data["participant_calls"] if item["participant"] == "alpha")
+            beta = next(item for item in data["participant_calls"] if item["participant"] == "beta")
+            self.assertEqual(alpha["count"], 1)
+            self.assertEqual(alpha["duration_seconds_total"], 1.25)
+            self.assertEqual(beta["failure_class"], "auth_required")
+            self.assertGreater(data["artifact_bytes"]["by_class"]["run"], 0)
+            self.assertGreater(data["artifact_bytes"]["by_class"]["raw-log"], 0)
+            metrics_text = metrics_path.read_text(encoding="utf-8")
+            self.assertIn('councli_turns_total{intent="chat",status="completed"} 1', metrics_text)
+            self.assertIn('councli_participant_calls_total{participant="beta",status="failed",failure_class="auth_required"} 1', metrics_text)
+
     def test_record_run_canceled_renders_canceled_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "run"

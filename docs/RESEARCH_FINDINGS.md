@@ -493,6 +493,6 @@ Treat the system as not production-grade until these gates pass:
 10. Keep improving bounded context packing with durable summaries, and extend
     recovery to orphaned artifacts and future indexes.
 11. Add retention/redaction and optional metrics export. Artifact scrub/prune
-    and redacted support-bundle export are in place; metrics export remains
-    future work.
+    and redacted support-bundle export are in place; `councli metrics` now
+    provides local JSON and OpenMetrics-style export from existing event logs.
 12. Add SQLite WAL index only after the artifact protocol is stable.

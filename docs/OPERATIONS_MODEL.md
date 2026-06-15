@@ -33,8 +33,8 @@ Operational gaps:
   groups, but cancellation state is still only partially modeled across all
   commands;
 - retention applies only to raw logs, not runs/blobs/worktrees;
-- no structured metrics export;
-- no budget model for cost, latency, output bytes, or disk usage;
+- metrics are derived locally from event logs, sidecars, and artifact sizes, but
+  there is no budget model for cost, latency, output bytes, or disk usage;
 - no background supervisor for long-running jobs;
 - no formal incident/debug bundle.
 
@@ -274,9 +274,11 @@ Minimum metrics:
 
 Export path:
 
-1. derive metrics from events locally;
-2. print a human table in `doctor --metrics`;
-3. optionally write Prometheus/OpenMetrics text to a file;
+1. derive metrics from events locally. Done through `councli metrics`;
+2. print a human table and JSON. Done through `councli metrics` and
+   `councli metrics --json`;
+3. optionally write Prometheus/OpenMetrics text to a file. Done through
+   `councli metrics --openmetrics-output <path>`;
 4. only later expose HTTP if a daemon exists.
 
 ## Background supervision

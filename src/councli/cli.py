@@ -4223,6 +4223,233 @@ def status(
 
 
 @app.command()
+def metrics(
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable metrics JSON.")] = False,
+    openmetrics_output: Annotated[
+        Path | None,
+        typer.Option("--openmetrics-output", help="Write Prometheus/OpenMetrics-style text to this file.", dir_okay=False),
+    ] = None,
+) -> None:
+    """Derive local observability metrics from councli event logs and artifacts."""
+    report = build_metrics_report(root)
+    if openmetrics_output is not None:
+        openmetrics_output.parent.mkdir(parents=True, exist_ok=True)
+        openmetrics_output.write_text(render_openmetrics(report), encoding="utf-8")
+    if json_output:
+        console.print_json(data=report)
+        return
+    print_metrics_report(report)
+    if openmetrics_output is not None:
+        console.print(f"[green]OpenMetrics written:[/] {openmetrics_output}")
+
+
+def build_metrics_report(root: Path) -> dict[str, Any]:
+    run_dirs = list_run_dirs(root)
+    events_by_type: dict[str, int] = {}
+    events_by_status: dict[str, int] = {}
+    turns: dict[tuple[str, str], int] = {}
+    participant_calls: dict[tuple[str, str, str], dict[str, Any]] = {}
+    malformed: list[dict[str, Any]] = []
+    runs_with_events = 0
+
+    for run_dir in run_dirs:
+        events, issue = read_events_prefix(run_dir)
+        if issue is not None:
+            malformed.append({"run": run_dir.name, "line": issue.line_number, "error": issue.error})
+        if not events:
+            continue
+        runs_with_events += 1
+        run_intent = "unknown"
+        run_status = "unknown"
+        for event in events:
+            event_type = str(event.get("type") or "unknown")
+            event_status = str(event.get("status") or "unknown")
+            increment_counter(events_by_type, event_type)
+            increment_counter(events_by_status, event_status)
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            if event_type == "run.started":
+                run_intent = str(payload.get("intent") or payload.get("mode") or "unknown")
+            elif event_type in {"turn.canceled", "run.canceled"}:
+                run_status = "canceled"
+            elif event_type == "run.completed":
+                run_status = str(payload.get("status") or "completed")
+            if event_type == "response.received":
+                record_participant_metric(run_dir, event, participant_calls)
+        increment_counter(turns, (run_intent, run_status))
+
+    artifact_bytes = artifact_bytes_by_class(root)
+    return {
+        "schema_version": "councli.metrics.v1",
+        "root": str(root.resolve()),
+        "runs": {
+            "total": len(run_dirs),
+            "with_events": runs_with_events,
+            "malformed_event_logs": malformed,
+        },
+        "turns_total": [
+            {"intent": intent, "status": status, "count": count}
+            for (intent, status), count in sorted(turns.items())
+        ],
+        "events_by_type": dict(sorted(events_by_type.items())),
+        "events_by_status": dict(sorted(events_by_status.items())),
+        "participant_calls": [
+            {
+                "participant": participant,
+                "status": status,
+                "failure_class": failure_class,
+                "count": data["count"],
+                "duration_seconds_total": round(data["duration_seconds_total"], 3),
+                "duration_samples": data["duration_samples"],
+            }
+            for (participant, status, failure_class), data in sorted(participant_calls.items())
+        ],
+        "artifact_bytes": artifact_bytes,
+    }
+
+
+def increment_counter(counter: dict[Any, int], key: Any, amount: int = 1) -> None:
+    counter[key] = counter.get(key, 0) + amount
+
+
+def record_participant_metric(
+    run_dir: Path,
+    event: dict[str, Any],
+    participant_calls: dict[tuple[str, str, str], dict[str, Any]],
+) -> None:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    participant = str(event.get("participant") or "unknown")
+    status = str(event.get("status") or "unknown")
+    failure_class = str(payload.get("failure_class") or "")
+    if status != "ok" and not failure_class:
+        failure_class = "unknown"
+    key = (participant, status, failure_class)
+    record = participant_calls.setdefault(
+        key,
+        {"count": 0, "duration_seconds_total": 0.0, "duration_samples": 0},
+    )
+    record["count"] += 1
+    duration = event_duration_seconds(run_dir, event)
+    if duration is not None:
+        record["duration_seconds_total"] += duration
+        record["duration_samples"] += 1
+
+
+def event_duration_seconds(run_dir: Path, event: dict[str, Any]) -> float | None:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    for value in (payload.get("duration_seconds"), sidecar_duration_seconds(run_dir, event)):
+        if isinstance(value, int | float):
+            return float(value)
+    return None
+
+
+def sidecar_duration_seconds(run_dir: Path, event: dict[str, Any]) -> float | None:
+    refs = event.get("refs") if isinstance(event.get("refs"), dict) else {}
+    sidecar_ref = refs.get("sidecar")
+    if not isinstance(sidecar_ref, str):
+        return None
+    path = (run_dir / sidecar_ref).resolve()
+    try:
+        path.relative_to(run_dir.resolve())
+    except ValueError:
+        return None
+    try:
+        sidecar = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = sidecar.get("duration_seconds") if isinstance(sidecar, dict) else None
+    return float(value) if isinstance(value, int | float) else None
+
+
+def artifact_bytes_by_class(root: Path) -> dict[str, Any]:
+    by_class: dict[str, int] = {}
+    for artifact_class in ARTIFACT_CLASSES:
+        by_class[artifact_class] = sum(
+            candidate.bytes
+            for candidate in collect_artifact_files(root, classes=[artifact_class], max_file_bytes=None)
+        )
+    return {
+        "by_class": by_class,
+        "total": sum(by_class.values()),
+    }
+
+
+def print_metrics_report(report: dict[str, Any]) -> None:
+    runs = report["runs"]
+    console.print("[bold]councli metrics[/]")
+    console.print(f"Runs: {runs['total']} total, {runs['with_events']} with events")
+    if runs["malformed_event_logs"]:
+        console.print(f"[yellow]Malformed event logs:[/] {len(runs['malformed_event_logs'])}")
+
+    turns_table = Table(title="Turns", expand=False)
+    turns_table.add_column("Intent")
+    turns_table.add_column("Status")
+    turns_table.add_column("Count", justify="right")
+    for item in report["turns_total"]:
+        turns_table.add_row(item["intent"], item["status"], str(item["count"]))
+    console.print(turns_table)
+
+    participant_table = Table(title="Participant calls", expand=False)
+    participant_table.add_column("Participant")
+    participant_table.add_column("Status")
+    participant_table.add_column("Failure")
+    participant_table.add_column("Count", justify="right")
+    participant_table.add_column("Duration", justify="right")
+    for item in report["participant_calls"]:
+        participant_table.add_row(
+            item["participant"],
+            item["status"],
+            item["failure_class"] or "-",
+            str(item["count"]),
+            f"{item['duration_seconds_total']:.3f}s" if item["duration_samples"] else "-",
+        )
+    console.print(participant_table)
+
+    artifact_table = Table(title="Artifact bytes", expand=False)
+    artifact_table.add_column("Class")
+    artifact_table.add_column("Bytes", justify="right")
+    for kind, size in report["artifact_bytes"]["by_class"].items():
+        artifact_table.add_row(kind, format_bytes(size))
+    artifact_table.add_row("total", format_bytes(report["artifact_bytes"]["total"]))
+    console.print(artifact_table)
+
+
+def render_openmetrics(report: dict[str, Any]) -> str:
+    lines = [
+        "# TYPE councli_runs_total counter",
+        f"councli_runs_total {report['runs']['total']}",
+        "# TYPE councli_runs_with_events_total counter",
+        f"councli_runs_with_events_total {report['runs']['with_events']}",
+    ]
+    for item in report["turns_total"]:
+        lines.append(
+            "councli_turns_total"
+            f"{{intent={metric_label(item['intent'])},status={metric_label(item['status'])}}} {item['count']}"
+        )
+    for item in report["participant_calls"]:
+        lines.append(
+            "councli_participant_calls_total"
+            f"{{participant={metric_label(item['participant'])},status={metric_label(item['status'])},"
+            f"failure_class={metric_label(item['failure_class'])}}} {item['count']}"
+        )
+        if item["duration_samples"]:
+            lines.append(
+                "councli_participant_duration_seconds_sum"
+                f"{{participant={metric_label(item['participant'])},status={metric_label(item['status'])}}} "
+                f"{item['duration_seconds_total']}"
+            )
+    for kind, size in report["artifact_bytes"]["by_class"].items():
+        lines.append(f"councli_artifact_bytes_total{{kind={metric_label(kind)}}} {size}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def metric_label(value: Any) -> str:
+    text = str(value)
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+
+@app.command()
 def show(
     run: Annotated[str, typer.Argument(help="Run id, unique prefix, or 'latest'.")] = "latest",
     root: RootOpt = Path.cwd(),
