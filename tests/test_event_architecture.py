@@ -1167,6 +1167,47 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertTrue(any("sidecar missing" in error or "ref sidecar missing" in error for error in report["errors"]))
 
+    def test_recover_rebuilds_from_valid_event_prefix_when_log_tail_is_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="hello\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            run_dir = [path for path in sorted((root / ".councli" / "runs").iterdir()) if path.name.endswith("-chat")][-1]
+            (run_dir / "events.jsonl").write_text(
+                (run_dir / "events.jsonl").read_text(encoding="utf-8") + '{"truncated":',
+                encoding="utf-8",
+            )
+            (run_dir / "state.json").unlink()
+            (run_dir / "blackboard.md").unlink()
+
+            recovered = subprocess.run(
+                [PYTHON, "-m", "councli", "recover", run_dir.name, "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+            report = json.loads(recovered.stdout)
+            self.assertTrue(report["ok"])
+            self.assertTrue(report["recovered"])
+            self.assertIsNotNone(report["event_log_issue"])
+            self.assertTrue(any("malformed tail" in warning for warning in report["warnings"]))
+            recovery = json.loads((run_dir / "recovery" / "malformed-events.json").read_text(encoding="utf-8"))
+            self.assertEqual(recovery["schema_version"], "councli.recovery.v1")
+            self.assertEqual(recovery["kind"], "event_log.malformed_tail")
+            self.assertTrue((run_dir / "state.json").exists())
+            self.assertTrue((run_dir / "blackboard.md").exists())
+
     def test_chat_degrades_repeated_auth_failures_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(

@@ -481,7 +481,7 @@ Treat the system as not production-grade until these gates pass:
 7. Add normalized failure classification.
 8. Add binary version/hash trust drift checks.
 9. Finish consistent canceled-state recording for all foreground commands.
-10. Keep improving bounded context packing with durable summaries, and add
-    malformed-log recovery.
+10. Keep improving bounded context packing with durable summaries, and extend
+    recovery to orphaned artifacts and future indexes.
 11. Add retention/redaction and optional metrics export.
 12. Add SQLite WAL index only after the artifact protocol is stable.

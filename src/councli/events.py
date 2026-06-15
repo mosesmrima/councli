@@ -25,6 +25,13 @@ class EventRef:
     event_id: str
 
 
+@dataclass(frozen=True)
+class EventLogIssue:
+    line_number: int
+    error: str
+    line: str
+
+
 class EventLedger:
     """Append-only run ledger plus generated human/machine projections."""
 
@@ -117,6 +124,11 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
         return _read_events_unlocked(run_dir)
 
 
+def read_events_prefix(run_dir: Path) -> tuple[list[dict[str, Any]], EventLogIssue | None]:
+    with _LOCK:
+        return _read_events_prefix_unlocked(run_dir)
+
+
 def _read_events_unlocked(run_dir: Path) -> list[dict[str, Any]]:
     path = run_dir / "events.jsonl"
     if not path.exists():
@@ -129,6 +141,23 @@ def _read_events_unlocked(run_dir: Path) -> list[dict[str, Any]]:
                 continue
             events.append(json.loads(line))
     return events
+
+
+def _read_events_prefix_unlocked(run_dir: Path) -> tuple[list[dict[str, Any]], EventLogIssue | None]:
+    path = run_dir / "events.jsonl"
+    if not path.exists():
+        return [], None
+    events: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                return events, EventLogIssue(line_number=line_number, error=str(exc), line=line)
+    return events, None
 
 
 def project_state(run_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]:

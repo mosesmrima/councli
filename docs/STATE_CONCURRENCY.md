@@ -385,9 +385,10 @@ Before treating the state layer as production-grade:
 1. Keep expanding schema validation beyond version/kind checks for events,
    requests, participants, responses, and decisions.
 2. Keep expanding `.response.json` validation before machine decisions.
-3. Extend recovery to malformed or partially truncated logs. `councli recover`
-   already rebuilds projections from valid logs, and `councli verify` checks
-   missing refs, invalid sidecars, and stale projections.
+3. Keep expanding recovery coverage for orphaned artifacts and future indexes.
+   `councli recover` rebuilds projections from valid logs, handles malformed
+   JSONL tails by preserving the bad line under `recovery/`, and `councli
+   verify` checks missing refs, invalid sidecars, and stale projections.
 4. Keep improving context packing with durable round summaries and participant
    summaries. Shared peer rounds already have explicit round, participant, and
    total character budgets.

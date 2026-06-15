@@ -55,7 +55,7 @@ from councli.council import (
     run_blackboard_council,
     run_review_phase,
 )
-from councli.events import EVENT_SCHEMA_VERSION, EventLedger, project_state, read_events, render_blackboard
+from councli.events import EVENT_SCHEMA_VERSION, EventLedger, project_state, read_events, read_events_prefix, render_blackboard
 from councli.gitops import apply_unified_diff, create_worktree, current_commit, diff, ensure_clean_enough, require_git_repo
 from councli.native import (
     append_project_event,
@@ -3592,11 +3592,15 @@ def recover(
     """Rebuild a run's state.json and blackboard.md projections."""
     run_dir = resolve_run_dir(root, run)
     try:
-        events = read_events(run_dir)
+        events, recovery_issue = recoverable_events(run_dir)
         if not events:
             raise ValueError("event log is empty")
-        EventLedger(run_dir).render()
-        report = verify_run_artifacts(run_dir)
+        state = project_state(run_dir, events)
+        write_json(run_dir / "state.json", state)
+        write_text(run_dir / "blackboard.md", render_blackboard(state))
+        if recovery_issue is not None:
+            write_event_recovery_artifact(run_dir, recovery_issue)
+        report = verify_run_artifacts(run_dir, allow_malformed_events=recovery_issue is not None)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         report = {
             "run": run_dir.name,
@@ -3616,17 +3620,47 @@ def recover(
         if report.get("ok"):
             console.print(f"Rebuilt: {run_dir / 'state.json'}")
             console.print(f"Rebuilt: {run_dir / 'blackboard.md'}")
+        for warning in report.get("warnings", []):
+            console.print(f"[yellow]- {warning}[/]")
         for error in report.get("errors", []):
             console.print(f"- {error}")
     if not report["ok"]:
         raise typer.Exit(code=2)
 
 
-def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
+def recoverable_events(run_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    try:
+        return read_events(run_dir), None
+    except json.JSONDecodeError:
+        events, issue = read_events_prefix(run_dir)
+        if issue is None:
+            raise
+        recovery_issue = {
+            "line_number": issue.line_number,
+            "error": issue.error,
+            "line": issue.line,
+        }
+        return events, recovery_issue
+
+
+def write_event_recovery_artifact(run_dir: Path, issue: dict[str, Any]) -> None:
+    write_json(
+        run_dir / "recovery" / "malformed-events.json",
+        {
+            "schema_version": "councli.recovery.v1",
+            "kind": "event_log.malformed_tail",
+            "run_id": run_dir.name,
+            "issue": issue,
+        },
+    )
+
+
+def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     refs_checked = 0
     sidecars_checked = 0
+    event_log_issue: dict[str, Any] | None = None
 
     required_files = ("events.jsonl", "state.json", "blackboard.md")
     for filename in required_files:
@@ -3636,8 +3670,29 @@ def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
     try:
         events = read_events(run_dir)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        events = []
-        errors.append(f"could not parse events.jsonl: {exc}")
+        if not allow_malformed_events:
+            events = []
+            errors.append(f"could not parse events.jsonl: {exc}")
+        else:
+            try:
+                events, issue = read_events_prefix(run_dir)
+            except OSError as prefix_exc:
+                events = []
+                errors.append(f"could not parse events.jsonl: {prefix_exc}")
+            else:
+                if issue is None:
+                    event_log_issue = {"error": str(exc)}
+                    errors.append(f"could not parse events.jsonl: {exc}")
+                else:
+                    event_log_issue = {
+                        "line_number": issue.line_number,
+                        "error": issue.error,
+                        "line": issue.line,
+                    }
+                    warnings.append(
+                        "events.jsonl has malformed tail at line "
+                        f"{issue.line_number}; projections use the valid prefix"
+                    )
 
     if not events:
         errors.append("event log is empty")
@@ -3740,6 +3795,7 @@ def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
         "events": len(events),
         "refs_checked": refs_checked,
         "sidecars_checked": sidecars_checked,
+        "event_log_issue": event_log_issue,
         "errors": errors,
         "warnings": warnings,
     }
