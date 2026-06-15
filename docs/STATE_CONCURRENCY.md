@@ -382,7 +382,8 @@ Policy:
 
 Before treating the state layer as production-grade:
 
-1. Add schema versions to events, requests, responses, and decisions.
+1. Keep expanding schema validation beyond version/kind checks for events,
+   requests, participants, responses, and decisions.
 2. Keep expanding `.response.json` validation before machine decisions.
 3. Extend recovery to malformed or partially truncated logs. `councli recover`
    already rebuilds projections from valid logs, and `councli verify` checks

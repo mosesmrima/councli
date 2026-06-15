@@ -24,6 +24,9 @@ from councli.events import EventLedger
 
 Phase = Literal["orient", "propose", "critique", "revise", "vote", "review"]
 OUTPUT_FILE_ATTEMPTS = 2
+REQUEST_SCHEMA_VERSION = "councli.request.v1"
+PARTICIPANTS_SCHEMA_VERSION = "councli.participants.v1"
+DECISION_SCHEMA_VERSION = "councli.decision.v1"
 
 
 @dataclass(frozen=True)
@@ -86,8 +89,27 @@ def run_blackboard_council(
     )
     write_text(run_dir / "task.md", state.task + "\n")
     write_json(
+        run_dir / "request.json",
+        {
+            "schema_version": REQUEST_SCHEMA_VERSION,
+            "id": run_dir.name,
+            "kind": "turn.request",
+            "task": state.task,
+            "root": str(root),
+            "mode": "blackboard_council",
+            "intent": "council",
+            "dry_run": dry_run,
+        },
+    )
+    write_json(
         run_dir / "participants.json",
-        {name: runners[name].health() for name in selected},
+        {
+            "schema_version": PARTICIPANTS_SCHEMA_VERSION,
+            "request_id": run_dir.name,
+            "kind": "participant.snapshot",
+            "intent": "council",
+            "participants": {name: runners[name].health() for name in selected},
+        },
     )
     ledger.append(
         "run.started",
@@ -97,6 +119,7 @@ def run_blackboard_council(
             "dry_run": dry_run,
             "min_confidence": min_confidence,
         },
+        refs={"request": "request.json", "participants": "participants.json", "task": "task.md"},
     )
     for name in selected:
         health = runners[name].health()
@@ -1034,6 +1057,8 @@ def decide_council(
         reason = "No majority decision; run another round or use an executor policy."
         status = "no_majority"
     return {
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "kind": "council.decision",
         "approved": approved,
         "status": status,
         "selected_plan": selected_plan,
@@ -1057,6 +1082,8 @@ def decide_review(
 ) -> dict:
     if not reviewers:
         return {
+            "schema_version": DECISION_SCHEMA_VERSION,
+            "kind": "review.decision",
             "attempt": attempt,
             "verdict": "unreviewed_implementation",
             "approved": False,
@@ -1115,6 +1142,8 @@ def decide_review(
         approved = False
         reason = "Review did not reach a majority decision."
     return {
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "kind": "review.decision",
         "attempt": attempt,
         "verdict": verdict,
         "approved": approved,

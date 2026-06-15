@@ -525,6 +525,8 @@ class EventArchitectureTests(unittest.TestCase):
         decision = decide_council(votes, ["alpha", "beta", "gamma"], ["plan:alpha:1", "plan:beta:1", "plan:gamma:1"])
 
         self.assertTrue(decision["approved"])
+        self.assertEqual(decision["schema_version"], "councli.decision.v1")
+        self.assertEqual(decision["kind"], "council.decision")
         self.assertEqual(decision["status"], "approved")
         self.assertEqual(decision["blocking_concerns"], [])
         self.assertEqual(decision["abstentions"], {"gamma": "invalid JSON vote"})
@@ -654,6 +656,8 @@ class EventArchitectureTests(unittest.TestCase):
             min_confidence=0.55,
         )
         self.assertFalse(review_decision["approved"])
+        self.assertEqual(review_decision["schema_version"], "councli.decision.v1")
+        self.assertEqual(review_decision["kind"], "review.decision")
         self.assertEqual(review_decision["verdict"], "needs_user")
         self.assertEqual(review_decision["counts"]["approve"], 0)
         self.assertEqual(review_decision["low_confidence_reviews"], {"alpha": 0.4, "beta": 0.4})
@@ -1085,6 +1089,15 @@ class EventArchitectureTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             run_dir = [path for path in sorted((root / ".councli" / "runs").iterdir()) if path.name.endswith("-deliberate")][-1]
+            request = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
+            participants = json.loads((run_dir / "participants.json").read_text(encoding="utf-8"))
+            events = read_events(run_dir)
+            self.assertEqual(request["schema_version"], "councli.request.v1")
+            self.assertEqual(request["kind"], "turn.request")
+            self.assertEqual(request["intent"], "deliberate")
+            self.assertEqual(participants["schema_version"], "councli.participants.v1")
+            self.assertEqual(participants["kind"], "participant.snapshot")
+            self.assertEqual(events[0]["schema_version"], "councli.event.v1")
             blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
             self.assertIn("## Deliberate Round 1", blackboard)
             self.assertIn("## Deliberate Round 2", blackboard)
@@ -1282,6 +1295,8 @@ class EventArchitectureTests(unittest.TestCase):
         )
 
         self.assertFalse(decision["approved"])
+        self.assertEqual(decision["schema_version"], "councli.decision.v1")
+        self.assertEqual(decision["kind"], "vote.decision")
         self.assertEqual(decision["votes"], {})
         self.assertEqual(decision["abstentions"], {"alpha": "sidecar vote is not valid"})
 

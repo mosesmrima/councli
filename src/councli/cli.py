@@ -55,7 +55,7 @@ from councli.council import (
     run_blackboard_council,
     run_review_phase,
 )
-from councli.events import EventLedger, project_state, read_events, render_blackboard
+from councli.events import EVENT_SCHEMA_VERSION, EventLedger, project_state, read_events, render_blackboard
 from councli.gitops import apply_unified_diff, create_worktree, current_commit, diff, ensure_clean_enough, require_git_repo
 from councli.native import (
     append_project_event,
@@ -87,6 +87,9 @@ app.add_typer(artifacts_app, name="artifacts")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 EXPERIMENTAL_ENV = "COUNCLI_EXPERIMENTAL"
+REQUEST_SCHEMA_VERSION = "councli.request.v1"
+PARTICIPANTS_SCHEMA_VERSION = "councli.participants.v1"
+DECISION_SCHEMA_VERSION = "councli.decision.v1"
 ARTIFACT_ROOTS = {
     "raw-log": ("session-recordings",),
     "session-archive": ("session-archives",),
@@ -1811,6 +1814,67 @@ TURN_INTENTS: dict[str, TurnIntent] = {
 TRAILER_PATTERN = re.compile(r"\n?COUNCLI_TRAILER\s*\n(?P<body>.*)$", re.IGNORECASE | re.DOTALL)
 
 
+def build_request_artifact(
+    *,
+    run_id: str,
+    task: str,
+    root: Path,
+    mode: str,
+    intent: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": REQUEST_SCHEMA_VERSION,
+        "id": run_id,
+        "kind": "turn.request",
+        "task": task,
+        "root": str(root),
+        "mode": mode,
+        "intent": intent,
+        "dry_run": dry_run,
+    }
+
+
+def build_participants_artifact(
+    *,
+    run_id: str,
+    runners: dict[str, AgentRunner],
+    selected_names: list[str],
+    intent: str,
+) -> dict[str, Any]:
+    participants: dict[str, Any] = {}
+    for name in selected_names:
+        runner = runners.get(name)
+        if runner is None:
+            participants[name] = {
+                "configured": False,
+                "available": False,
+                "reason": "unknown participant",
+            }
+            continue
+        health = runner.health()
+        participants[name] = {
+            "configured": True,
+            "enabled": health.enabled,
+            "binary": health.binary,
+            "path": health.path,
+            "available": health.available,
+            "reason": health.reason,
+            "backend": health.backend,
+            "version": health.version,
+            "version_status": health.version_status,
+            "readiness_status": health.readiness_status,
+            "readiness_detail": health.readiness_detail,
+        }
+    return {
+        "schema_version": PARTICIPANTS_SCHEMA_VERSION,
+        "request_id": run_id,
+        "kind": "participant.snapshot",
+        "intent": intent,
+        "participants": participants,
+    }
+
+
 def run_shared_turn(
     *,
     task: str,
@@ -1833,6 +1897,26 @@ def run_shared_turn(
 
     run_dir = new_run_dir(root, intent.name)
     brief = write_task_brief(root, task=task, task_id=run_dir.name, run_dir=run_dir)
+    write_json(
+        run_dir / "request.json",
+        build_request_artifact(
+            run_id=run_dir.name,
+            task=task,
+            root=root,
+            mode="shared_turn",
+            intent=intent.name,
+            dry_run=dry_run,
+        ),
+    )
+    write_json(
+        run_dir / "participants.json",
+        build_participants_artifact(
+            run_id=run_dir.name,
+            runners=runners,
+            selected_names=selected_names,
+            intent=intent.name,
+        ),
+    )
     ledger = EventLedger(run_dir, run_id=run_dir.name)
     ledger.append(
         "run.started",
@@ -1843,7 +1927,7 @@ def run_shared_turn(
             "intent": intent.name,
             "dry_run": dry_run,
         },
-        refs={"brief": "brief.md"},
+        refs={"brief": "brief.md", "request": "request.json", "participants": "participants.json"},
     )
 
     console.rule(f"[bold]turn {run_dir.name}[/]")
@@ -2680,6 +2764,8 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
     if counts:
         winner = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
     return {
+        "schema_version": DECISION_SCHEMA_VERSION,
+        "kind": "vote.decision",
         "approved": bool(winner),
         "winner": winner,
         "votes": votes,
@@ -3571,6 +3657,11 @@ def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
         if event_id in seen_event_ids:
             errors.append(f"duplicate event_id: {event_id}")
         seen_event_ids.add(event_id)
+        schema_version = event.get("schema_version")
+        if schema_version is None:
+            warnings.append(f"event {event_id or index} missing schema_version")
+        elif schema_version != EVENT_SCHEMA_VERSION:
+            errors.append(f"event {event_id or index} has unsupported schema_version: {schema_version!r}")
         refs = event.get("refs") if isinstance(event.get("refs"), dict) else {}
         for key, value in refs.items():
             if value is None:
@@ -3585,6 +3676,30 @@ def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
                 continue
             if not ref_path.exists():
                 errors.append(f"event {event_id or index} ref {key} missing: {value}")
+
+    schema_artifacts = [
+        ("request.json", REQUEST_SCHEMA_VERSION, {"turn.request"}),
+        ("participants.json", PARTICIPANTS_SCHEMA_VERSION, {"participant.snapshot"}),
+        ("decision.json", DECISION_SCHEMA_VERSION, {"council.decision"}),
+        ("decisions/vote.json", DECISION_SCHEMA_VERSION, {"vote.decision"}),
+    ]
+    for rel, expected_schema, allowed_kinds in schema_artifacts:
+        path = run_dir / rel
+        if not path.exists():
+            continue
+        try:
+            artifact = read_json(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"could not parse {rel}: {exc}")
+            continue
+        artifact_errors, artifact_warnings = validate_schema_artifact(
+            artifact,
+            rel=rel,
+            expected_schema=expected_schema,
+            allowed_kinds=allowed_kinds,
+        )
+        errors.extend(artifact_errors)
+        warnings.extend(artifact_warnings)
 
     sidecar_paths = sorted(run_dir.rglob("*.response.json"))
     for path in sidecar_paths:
@@ -3660,6 +3775,30 @@ def safe_event_ref(run_dir: Path, value: str) -> Path | None:
     except ValueError:
         return None
     return resolved
+
+
+def validate_schema_artifact(
+    artifact: Any,
+    *,
+    rel: str,
+    expected_schema: str,
+    allowed_kinds: set[str],
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(artifact, dict):
+        return [f"{rel} is not an object"], warnings
+    schema_version = artifact.get("schema_version")
+    if schema_version is None:
+        warnings.append(f"{rel} missing schema_version")
+    elif schema_version != expected_schema:
+        errors.append(f"{rel} has unsupported schema_version: {schema_version!r}")
+    kind = artifact.get("kind")
+    if kind is None:
+        warnings.append(f"{rel} missing kind")
+    elif kind not in allowed_kinds:
+        errors.append(f"{rel} has invalid kind: {kind!r}")
+    return errors, warnings
 
 
 def validate_response_sidecar(run_dir: Path, sidecar: Any, rel: str) -> list[str]:

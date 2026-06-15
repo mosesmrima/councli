@@ -16,6 +16,7 @@ from councli.artifacts import to_jsonable, write_json, write_text
 
 
 _LOCK = threading.Lock()
+EVENT_SCHEMA_VERSION = "councli.event.v1"
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class EventLedger:
             seq = self._next_seq()
             event_id = f"evt_{seq:06d}"
             event = {
+                "schema_version": EVENT_SCHEMA_VERSION,
                 "seq": seq,
                 "event_id": event_id,
                 "ts": datetime.now(timezone.utc).isoformat(),

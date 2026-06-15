@@ -327,7 +327,7 @@ Failure classes should be normalized:
 
 ## Event envelope
 
-Current events are close to the target. Required changes:
+Current events are close to the target. Implemented baseline:
 
 - protect all event appends with a per-run `fcntl`/`flock` lock;
 - allocate sequence numbers under the same lock;
@@ -335,6 +335,9 @@ Current events are close to the target. Required changes:
 - render `state.json` and `blackboard.md` under the same lock or through a
   single-writer projection step;
 - store `schema_version` in each event.
+
+Remaining work: validate every event payload against typed schemas as those
+schemas stabilize.
 
 Target event:
 
