@@ -82,6 +82,16 @@ class AgentConfig(BaseModel):
     post_paste_delay_seconds: float = Field(default=0.5, ge=0.0, le=10.0)
     timeout_seconds: int = Field(default=900, ge=1)
 
+    @field_validator("command", "broadcast_command")
+    @classmethod
+    def validate_prompt_placeholder(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        for part in value:
+            if "{prompt}" in part and part != "{prompt}":
+                raise ValueError("{prompt} must be a standalone argv token")
+        return value
+
 
 class ConsensusConfig(BaseModel):
     max_rounds: int = Field(default=2, ge=1, le=5)

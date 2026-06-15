@@ -114,6 +114,7 @@ pip install -e .
 
 ```bash
 councli doctor
+councli doctor --json
 councli setup
 councli chat
 councli init --disable-missing
@@ -192,6 +193,13 @@ agents:
 ```
 
 If an agent is unavailable, `councli` records that and continues with the available agents.
+During one interactive `councli chat` session, repeated auth/model/quota
+failures are marked degraded and skipped on later turns until you restart the
+session.
+
+`councli doctor --json` emits per-intent readiness objects, so setup scripts can
+distinguish `ready`, `missing_binary`, `unsupported_intent`, `tmux_unavailable`,
+and disabled participants without scraping the table output.
 
 Native tmux-backed sessions are supported for CLIs that behave better interactively:
 

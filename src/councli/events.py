@@ -142,6 +142,7 @@ def project_state(run_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]
         "reviews": {},
         "review_decision": None,
         "run_completed": None,
+        "run_canceled": None,
         "events": len(events),
     }
     for event in events:
@@ -223,6 +224,8 @@ def project_state(run_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]
             state["review_decision"] = payload
         elif event_type == "run.completed":
             state["run_completed"] = payload
+        elif event_type == "turn.canceled":
+            state["run_canceled"] = payload
     return state
 
 
@@ -312,6 +315,11 @@ def render_blackboard(state: dict[str, Any]) -> str:
     if run_completed:
         lines.extend(["## Run Completion", "", "```json"])
         lines.append(json.dumps(run_completed, indent=2, sort_keys=True))
+        lines.extend(["```", ""])
+    run_canceled = state.get("run_canceled")
+    if run_canceled:
+        lines.extend(["## Run Canceled", "", "```json"])
+        lines.append(json.dumps(run_canceled, indent=2, sort_keys=True))
         lines.extend(["```", ""])
     return "\n".join(lines).rstrip() + "\n"
 

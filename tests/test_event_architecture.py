@@ -68,6 +68,10 @@ def fake_agent_script() -> str:
         "    packet_pointer = re.search(r'COUNCLI_PACKET_FILE=([^\\n]+)', prompt)\n"
         "    if packet_pointer:\n"
         "        prompt = pathlib.Path(packet_pointer.group(1).strip()).read_text()\n"
+        "    shared_failure = scenario.get('shared_failures', {}).get(name)\n"
+        "    if shared_failure:\n"
+        "        print(shared_failure, file=sys.stderr)\n"
+        "        sys.exit(1)\n"
         "    intent_match = re.search(r'COUNCLI_INTENT=([^\\n]+)', prompt)\n"
         "    intent = intent_match.group(1) if intent_match else 'chat'\n"
         "    round_match = re.search(r'^Round: ([0-9]+)$', prompt, re.M)\n"
@@ -182,6 +186,7 @@ class EventArchitectureTests(unittest.TestCase):
                 participant="codex",
                 refs={"content": content_ref},
             )
+            ledger.append("turn.canceled", status="canceled", payload={"rounds": 1})
             ledger.render()
 
             state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
@@ -190,7 +195,9 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(state["task"], "build a tiny app")
             self.assertIn("codex", state["participants"])
             self.assertEqual(state["phases"]["propose"]["codex"]["content"], "PLAN\n- keep it simple")
+            self.assertEqual(state["run_canceled"]["rounds"], 1)
             self.assertIn("PLAN\n- keep it simple", blackboard)
+            self.assertIn("## Run Canceled", blackboard)
 
     def test_event_ledger_uses_run_lock_for_cross_process_appends(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -930,6 +937,30 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(synthesis["kind"], "synthesis.response")
             self.assertEqual(synthesis["source_participants"], ["alpha", "beta"])
 
+    def test_chat_degrades_repeated_auth_failures_for_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(
+                tmp,
+                scenario={"shared_failures": {"beta": "authentication required"}},
+            )
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root)],
+                cwd=REPO_ROOT,
+                input="first question\nsecond question\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            runs = [path for path in sorted((root / ".councli" / "runs").iterdir()) if "-chat" in path.name]
+            self.assertEqual(len(runs), 2)
+            first_beta = json.loads((runs[0] / "shared" / "chat.round1" / "beta.response.json").read_text(encoding="utf-8"))
+            second_beta = json.loads((runs[1] / "shared" / "chat.round1" / "beta.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(first_beta["failure_class"], "auth_required")
+            self.assertEqual(second_beta["status"], "skipped")
+            self.assertIn("degraded for this session", (runs[1] / "blackboard.md").read_text(encoding="utf-8"))
+
     def test_parse_turn_trailer_strips_metadata(self) -> None:
         body, trailer = parse_turn_trailer(
             "Body answer\n\nCOUNCLI_TRAILER\ncontinue: true\nrecommend: vote\nsummary: key point\nvote: sqlite\nconfidence: 0.8\n"
@@ -1121,6 +1152,25 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertNotEqual(blocked_transport.returncode, 0)
             self.assertIn("trusted agent fields changed", blocked_transport.stdout + blocked_transport.stderr)
 
+    def test_prompt_placeholder_must_be_standalone_argv_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["command"] = [PYTHON, "-c", "print('x')", "--prompt={prompt}"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            trusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(trusted.returncode, 0)
+            self.assertIn("{prompt} must be a standalone argv token", trusted.stdout + trusted.stderr)
+
     def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")
@@ -1154,9 +1204,29 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             data = json.loads(proc.stdout)
             alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
-            self.assertTrue(alpha["intents"]["chat"])
-            self.assertTrue(alpha["intents"]["deliberate"])
-            self.assertTrue(alpha["intents"]["vote"])
+            self.assertTrue(alpha["intents"]["chat"]["ready"])
+            self.assertEqual(alpha["intents"]["chat"]["status"], "ready")
+            self.assertTrue(alpha["intents"]["deliberate"]["ready"])
+            self.assertTrue(alpha["intents"]["vote"]["ready"])
+
+    def test_doctor_json_is_pure_json_on_fresh_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.set_state_home(Path(tmp) / "state")
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data["config"], str(project_config_path(root)))
+            self.assertIn("agents", data)
+            self.assertNotIn("Created default councli config", proc.stdout)
 
     def test_init_disable_missing_disables_absent_default_agents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

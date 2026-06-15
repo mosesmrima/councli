@@ -95,15 +95,16 @@ def print_mascot() -> None:
     console.print(COUNCLI_MASCOT, style="cyan")
 
 
-def load_config(root: Path, *, auto_init: bool = False):
+def load_config(root: Path, *, auto_init: bool = False, quiet: bool = False):
     try:
         return load_config_model(root)
     except FileNotFoundError as exc:
         if auto_init:
             path, _ = write_default_config(root, overwrite=False)
             ensure_councli_gitignore(root)
-            console.print(f"[green]Created default councli config:[/] {path}")
-            console.print(f"[green]Trusted generated agent control config:[/] {project_trust_path(root)}")
+            if not quiet:
+                console.print(f"[green]Created default councli config:[/] {path}")
+                console.print(f"[green]Trusted generated agent control config:[/] {project_trust_path(root)}")
             return load_config_model(root)
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=2) from exc
@@ -205,7 +206,7 @@ def doctor(
     json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable readiness JSON.")] = False,
 ) -> None:
     """Check configured agent availability."""
-    config = load_config(root, auto_init=True)
+    config = load_config(root, auto_init=True, quiet=json_output)
     runners = build_runners(config.agents)
     records: list[dict[str, Any]] = []
 
@@ -219,8 +220,7 @@ def doctor(
 
     for name, runner in runners.items():
         health = runner.health()
-        shared_ready = health.available and any("{prompt}" in part for part in (runner.config.broadcast_command or runner.config.command))
-        native_ready = health.available and bool(runner.config.start_command or runner.config.backend == "tmux")
+        intents = doctor_intent_readiness(runner, health)
         record = {
             "agent": name,
             "enabled": health.enabled,
@@ -229,13 +229,7 @@ def doctor(
             "path": health.path,
             "available": health.available,
             "reason": health.reason,
-            "intents": {
-                "chat": shared_ready,
-                "deliberate": shared_ready,
-                "vote": shared_ready,
-                "broadcast": health.available and bool(runner.config.broadcast_enabled),
-                "assistant": native_ready,
-            },
+            "intents": intents,
         }
         records.append(record)
         style = "green" if health.available else "yellow"
@@ -253,6 +247,42 @@ def doctor(
         return
     console.print(table)
     console.print(f"Config: {project_config_path(root)}")
+
+
+def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[str, Any]]:
+    shared_command = runner.config.broadcast_command or runner.config.command
+    shared_supported = any("{prompt}" in part for part in shared_command)
+    broadcast_supported = bool(runner.config.broadcast_enabled and shared_supported)
+    assistant_supported = bool(runner.config.start_command or runner.config.backend == "tmux")
+    return {
+        "chat": intent_readiness(health, supported=shared_supported),
+        "deliberate": intent_readiness(health, supported=shared_supported),
+        "vote": intent_readiness(health, supported=shared_supported),
+        "broadcast": intent_readiness(health, supported=broadcast_supported),
+        "assistant": intent_readiness(health, supported=assistant_supported),
+    }
+
+
+def intent_readiness(health: Any, *, supported: bool) -> dict[str, Any]:
+    if not getattr(health, "enabled", False):
+        return {"ready": False, "status": "disabled", "reason": getattr(health, "reason", "disabled")}
+    if not supported:
+        return {"ready": False, "status": "unsupported_intent", "reason": "no command for this intent"}
+    if not getattr(health, "available", False):
+        reason = str(getattr(health, "reason", "") or "")
+        return {"ready": False, "status": normalize_health_status(reason), "reason": reason}
+    return {"ready": True, "status": "ready", "reason": getattr(health, "reason", "available")}
+
+
+def normalize_health_status(reason: str) -> str:
+    lowered = reason.lower()
+    if "binary not found" in lowered:
+        return "missing_binary"
+    if "tmux" in lowered:
+        return "tmux_unavailable"
+    if "disabled" in lowered:
+        return "disabled"
+    return "unavailable"
 
 
 @sessions_app.command("list")
@@ -1496,6 +1526,7 @@ def run_shared_turn(
     runners: dict[str, AgentRunner],
     participant: list[str] | None,
     dry_run: bool,
+    session_degraded: dict[str, str] | None = None,
 ) -> Path | None:
     intent = TURN_INTENTS[intent_name]
     selected_names = participant or [
@@ -1529,6 +1560,7 @@ def run_shared_turn(
 
     runnable: dict[str, AgentRunner] = {}
     degraded: dict[str, Any] = {}
+    session_degraded = session_degraded if session_degraded is not None else {}
     for name in selected_names:
         runner = runners.get(name)
         if runner is None:
@@ -1549,6 +1581,9 @@ def run_shared_turn(
                 "intent": intent.name,
             },
         )
+        if name in session_degraded:
+            degraded[name] = runner_unavailable_result(name, f"degraded for this session: {session_degraded[name]}")
+            continue
         if not health.available:
             degraded[name] = runner_unavailable_result(name, health.reason)
             continue
@@ -1564,51 +1599,65 @@ def run_shared_turn(
     all_rounds: list[dict[str, Any]] = []
     latest_results: dict[str, Any] = dict(degraded)
     round_count = 0
-    for round_number in range(1, intent.max_rounds + 1):
-        round_count = round_number
-        context = render_peer_context(all_rounds) if round_number > 1 else ""
-        phase = f"{intent.name}.round{round_number}"
-        packet_prompts = write_shared_turn_packets(
-            ledger=ledger,
-            run_dir=run_dir,
-            participants=list(runnable.keys()),
-            task=task,
-            intent=intent,
-            brief_path=brief.path,
-            round_number=round_number,
-            peer_context=context,
-        )
-        console.print(f"\n[bold cyan]Round {round_number}[/] asking {', '.join(runnable.keys()) if runnable else '-'}")
-        round_results = run_turn_round(root=root, runners=runnable, prompts=packet_prompts, dry_run=dry_run, phase=phase)
-        merged_results = dict(degraded)
-        merged_results.update(round_results)
-        parsed_round: dict[str, dict[str, Any]] = {}
-        for name in selected_names:
-            result = merged_results.get(name) or runner_unavailable_result(name, "not runnable")
-            if dry_run and result.ok:
-                body, trailer = result.output, default_turn_trailer()
-            else:
-                body, trailer = parse_turn_trailer(result.output if result.ok else "")
-            if result.ok:
-                result = replace(result, output=body)
-            latest_results[name] = result
-            parsed_round[name] = {"result": result, "trailer": trailer}
-            sidecar = write_shared_turn_result(
-                root=root,
-                run_dir=run_dir,
+    try:
+        for round_number in range(1, intent.max_rounds + 1):
+            round_count = round_number
+            context = render_peer_context(all_rounds) if round_number > 1 else ""
+            phase = f"{intent.name}.round{round_number}"
+            packet_prompts = write_shared_turn_packets(
                 ledger=ledger,
-                name=name,
-                result=result,
+                run_dir=run_dir,
+                participants=list(runnable.keys()),
+                task=task,
                 intent=intent,
+                brief_path=brief.path,
                 round_number=round_number,
-                trailer=trailer,
+                peer_context=context,
             )
-            parsed_round[name]["sidecar"] = sidecar
+            console.print(f"\n[bold cyan]Round {round_number}[/] asking {', '.join(runnable.keys()) if runnable else '-'}")
+            round_results = run_turn_round(root=root, runners=runnable, prompts=packet_prompts, dry_run=dry_run, phase=phase)
+            merged_results = dict(degraded)
+            merged_results.update(round_results)
+            parsed_round: dict[str, dict[str, Any]] = {}
+            for name in selected_names:
+                result = merged_results.get(name) or runner_unavailable_result(name, "not runnable")
+                if dry_run and result.ok:
+                    body, trailer = result.output, default_turn_trailer()
+                else:
+                    body, trailer = parse_turn_trailer(result.output if result.ok else "")
+                if result.ok:
+                    result = replace(result, output=body)
+                latest_results[name] = result
+                parsed_round[name] = {"result": result, "trailer": trailer}
+                sidecar = write_shared_turn_result(
+                    root=root,
+                    run_dir=run_dir,
+                    ledger=ledger,
+                    name=name,
+                    result=result,
+                    intent=intent,
+                    round_number=round_number,
+                    trailer=trailer,
+                )
+                parsed_round[name]["sidecar"] = sidecar
+                if is_session_degrading_failure(result):
+                    session_degraded[name] = result.error or result.failure_class or "agent unavailable"
+                    runnable.pop(name, None)
+            ledger.render()
+            all_rounds.append(parsed_round)
+            print_shared_round_responses(parsed_round, selected_names, intent=intent, round_number=round_number)
+            if not should_continue_shared_turn(intent=intent, round_number=round_number, parsed_round=parsed_round):
+                break
+    except KeyboardInterrupt:
+        ledger.append(
+            "turn.canceled",
+            status="canceled",
+            payload={"mode": "shared_turn", "intent": intent.name, "rounds": round_count},
+        )
         ledger.render()
-        all_rounds.append(parsed_round)
-        print_shared_round_responses(parsed_round, selected_names, intent=intent, round_number=round_number)
-        if not should_continue_shared_turn(intent=intent, round_number=round_number, parsed_round=parsed_round):
-            break
+        console.print("\n[yellow]Turn canceled.[/]")
+        console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+        return run_dir
 
     decision = decide_shared_vote(all_rounds[-1], selected_names) if intent.require_vote and all_rounds else None
     if decision is not None:
@@ -1668,6 +1717,7 @@ def run_conversation_turn(
     runners: dict[str, AgentRunner],
     participant: list[str] | None,
     dry_run: bool,
+    session_degraded: dict[str, str] | None = None,
 ) -> Path | None:
     return run_shared_turn(
         task=task,
@@ -1676,6 +1726,7 @@ def run_conversation_turn(
         runners=runners,
         participant=participant,
         dry_run=dry_run,
+        session_degraded=session_degraded,
     )
 
 
@@ -1888,6 +1939,14 @@ def should_continue_shared_turn(*, intent: TurnIntent, round_number: int, parsed
     return any(bool(data.get("trailer", {}).get("continue")) for data in parsed_round.values())
 
 
+def is_session_degrading_failure(result: Any) -> bool:
+    return bool(
+        not result.ok
+        and not result.skipped
+        and getattr(result, "failure_class", "") in {"auth_required", "model_unconfigured", "quota_unavailable"}
+    )
+
+
 def print_participant_status(phase: str, name: str, result: Any) -> None:
     if result.ok:
         console.print(f"[green]{phase}:{name} done[/]")
@@ -2075,7 +2134,16 @@ def synthesize_shared_turn(
     try:
         synthesizer = shared_turn_runner(runners[synthesizer_name])
     except ValueError:
-        return local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
+        fallback = local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
+        write_synthesis_artifact(
+            run_dir=run_dir,
+            ledger=ledger,
+            body=fallback,
+            synthesizer="local",
+            source_participants=ok_names,
+            status="ok",
+        )
+        return fallback
 
     prompt = synthesis_prompt(task=task, intent=intent, names=ok_names, all_rounds=all_rounds, decision=decision)
     result = synthesizer.run(prompt, cwd=root, dry_run=False)
@@ -2455,6 +2523,7 @@ def chat(
     console.print("[bold]councli interactive[/]")
     console.print("Type normally for shared conversation, /deliberate or /vote for explicit governance, /help for commands.")
     print_available_participants(runners)
+    session_degraded: dict[str, str] = {}
 
     while True:
         try:
@@ -2470,7 +2539,14 @@ def chat(
         if line.startswith("//"):
             line = line[1:]
         elif line.startswith("/"):
-            if handle_chat_command(line, root=root, runners=runners, participant=participant, dry_run=dry_run):
+            if handle_chat_command(
+                line,
+                root=root,
+                runners=runners,
+                participant=participant,
+                dry_run=dry_run,
+                session_degraded=session_degraded,
+            ):
                 return
             continue
 
@@ -2480,6 +2556,7 @@ def chat(
             runners=runners,
             participant=participant,
             dry_run=dry_run,
+            session_degraded=session_degraded,
         )
 
 
@@ -2810,6 +2887,7 @@ def handle_chat_command(
     runners: dict[str, AgentRunner],
     participant: list[str] | None,
     dry_run: bool,
+    session_degraded: dict[str, str] | None = None,
 ) -> bool:
     parts = line.split()
     command = parts[0].lower()
@@ -2895,6 +2973,7 @@ def handle_chat_command(
             runners=runners,
             participant=participant,
             dry_run=dry_run,
+            session_degraded=session_degraded,
         )
         return False
     if command == "/show":
