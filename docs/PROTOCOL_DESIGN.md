@@ -21,8 +21,9 @@ The current implementation already has useful pieces:
 
 The main protocol gaps are also clear:
 
-- shared-turn trailers are still parsed as fallback text; sidecars exist but
-  need stricter schema validation before every machine decision;
+- shared-turn trailers are still parsed as fallback text; response and
+  decision-artifact validation exists for key machine decisions, but formal
+  schemas still need to replace version/kind checks;
 - the blackboard renderer still treats legacy phases as the primary structure;
 - participant failure classification is mostly stderr-text heuristics;
 - broadcast capability is represented by a boolean rather than a permission
@@ -556,8 +557,8 @@ Participant unavailable:
 4. Update blackboard rendering to group arbitrary `intent.round` phases before
    legacy phases.
 5. Add normalized failure classification.
-6. Keep `/vote` decisions in `decisions/vote.json` and reject invalid vote
-   sidecars.
+6. Keep `/vote` decisions in `decisions/vote.json`, and reject invalid vote,
+   review, executor-selection, or apply decision artifacts.
 7. Add adapter capability metadata.
 8. Add SQLite WAL index only after run-local locking and sidecars are stable.
 9. Add optional JSON-RPC/Unix-socket daemon only if the interactive shell needs

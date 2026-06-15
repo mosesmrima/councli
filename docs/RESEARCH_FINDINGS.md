@@ -442,9 +442,10 @@ Use existing standards and tools where they fit:
 - `doctor --json` reports intent readiness and built-in adapters have safe
   default probes, but richer auth/model/quota interpretation remains
   adapter-specific work.
-- Shared-turn trailers are still text fallbacks. `/vote` decisions now require
-  valid response sidecars; review, executor selection, and apply need the same
-  stricter validation.
+- Shared-turn trailers are still text fallbacks for participant chat bodies.
+  `/vote` decisions require valid response sidecars, and legacy council
+  vote/review/apply paths now require versioned vote, review, and decision
+  artifacts before they can drive machine decisions.
 
 ## Production readiness gates
 
@@ -456,9 +457,10 @@ Treat the system as not production-grade until these gates pass:
    fallback is configured.
 4. Binary path and executable hash drift after trust are detected; stable
    version reporting remains a hardening step.
-5. Participant response sidecars are emitted and validated before every
-   remaining machine decision.
-6. Review, executor selection, and apply reject missing or invalid sidecars.
+5. Keep expanding participant response and decision-artifact validation beyond
+   the current schema/version/kind checks.
+6. Review, executor selection, and apply reject missing or invalid machine
+   decision artifacts.
 7. Run event writes use cross-process `fcntl.flock`.
 8. `councli verify` and `councli recover` can rebuild projections and detect
    missing refs.
@@ -476,8 +478,7 @@ Treat the system as not production-grade until these gates pass:
 3. Add intent-specific readiness model and `doctor --json`.
 4. Add response sidecars for shared turns while retaining `COUNCLI_TRAILER` as
    fallback.
-5. Extend sidecar validation from `/vote` to review, executor selection, and
-   apply decisions.
+5. Keep tightening sidecar and decision-artifact validation with formal schemas.
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add stable binary version reporting to trust and security summaries.

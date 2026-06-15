@@ -25,7 +25,7 @@ from councli.cli import (
     supports_native_session,
 )
 from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
-from councli.council import decide_council, decide_review, empty_vote, next_executor, parse_review, run_blackboard_council
+from councli.council import decide_council, decide_review, empty_review, empty_vote, next_executor, parse_review, run_blackboard_council
 from councli.events import EventLedger, read_events
 from councli.gitops import create_worktree, diff
 
@@ -506,6 +506,9 @@ class EventArchitectureTests(unittest.TestCase):
     def test_vote_parse_failure_is_abstention_not_veto(self) -> None:
         votes = {
             "alpha": {
+                "schema_version": "councli.vote.v1",
+                "kind": "council.vote",
+                "valid": True,
                 "preferred_plan": "plan:alpha:1",
                 "preferred_executor": "alpha",
                 "confidence": 0.9,
@@ -513,6 +516,9 @@ class EventArchitectureTests(unittest.TestCase):
                 "reason": "valid",
             },
             "beta": {
+                "schema_version": "councli.vote.v1",
+                "kind": "council.vote",
+                "valid": True,
                 "preferred_plan": "plan:alpha:1",
                 "preferred_executor": "alpha",
                 "confidence": 0.9,
@@ -569,6 +575,17 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(broadcast_runner(unsafe_fallback).config.command, unsafe_fallback.config.command)
 
     def test_review_parser_and_decision_helpers(self) -> None:
+        def valid_review(verdict: str, *, confidence: float = 0.9, concerns: list[str] | None = None) -> dict:
+            return {
+                "schema_version": "councli.review.v1",
+                "kind": "review.verdict",
+                "valid": True,
+                "verdict": verdict,
+                "confidence": confidence,
+                "blocking_concerns": concerns or [],
+                "abstained": False,
+            }
+
         parsed = parse_review('prefix {"verdict":"approve","confidence":"high","blocking_concerns":[],"reason":"ok"} suffix')
         self.assertEqual(parsed["verdict"], "approve")
         self.assertFalse(parsed["abstained"])
@@ -580,8 +597,8 @@ class EventArchitectureTests(unittest.TestCase):
 
         accepted = decide_review(
             {
-                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
-                "b": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "a": valid_review("approve"),
+                "b": valid_review("approve"),
                 "c": parse_review("bad"),
             },
             ["a", "b", "c"],
@@ -591,8 +608,8 @@ class EventArchitectureTests(unittest.TestCase):
 
         replace = decide_review(
             {
-                "a": {"verdict": "replace", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
-                "b": {"verdict": "replace", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "a": valid_review("replace"),
+                "b": valid_review("replace"),
             },
             ["a", "b"],
             attempt=1,
@@ -601,8 +618,8 @@ class EventArchitectureTests(unittest.TestCase):
 
         revise = decide_review(
             {
-                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": ["missing test"], "abstained": False},
-                "b": {"verdict": "request_changes", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "a": valid_review("approve", concerns=["missing test"]),
+                "b": valid_review("request_changes"),
             },
             ["a", "b"],
             attempt=1,
@@ -614,7 +631,7 @@ class EventArchitectureTests(unittest.TestCase):
 
         one_good_one_bad = decide_review(
             {
-                "a": {"verdict": "approve", "confidence": 0.9, "blocking_concerns": [], "abstained": False},
+                "a": valid_review("approve"),
                 "b": parse_review("bad"),
             },
             ["a", "b"],
@@ -625,6 +642,9 @@ class EventArchitectureTests(unittest.TestCase):
     def test_confidence_threshold_excludes_low_confidence_votes_and_reviews(self) -> None:
         votes = {
             "alpha": {
+                "schema_version": "councli.vote.v1",
+                "kind": "council.vote",
+                "valid": True,
                 "preferred_plan": "plan:alpha:1",
                 "preferred_executor": "alpha",
                 "confidence": 0.4,
@@ -632,6 +652,9 @@ class EventArchitectureTests(unittest.TestCase):
                 "reason": "weak",
             },
             "beta": {
+                "schema_version": "councli.vote.v1",
+                "kind": "council.vote",
+                "valid": True,
                 "preferred_plan": "plan:alpha:1",
                 "preferred_executor": "alpha",
                 "confidence": 0.4,
@@ -648,8 +671,24 @@ class EventArchitectureTests(unittest.TestCase):
 
         review_decision = decide_review(
             {
-                "alpha": {"verdict": "approve", "confidence": 0.4, "blocking_concerns": [], "abstained": False},
-                "beta": {"verdict": "approve", "confidence": 0.4, "blocking_concerns": [], "abstained": False},
+                "alpha": {
+                    "schema_version": "councli.review.v1",
+                    "kind": "review.verdict",
+                    "valid": True,
+                    "verdict": "approve",
+                    "confidence": 0.4,
+                    "blocking_concerns": [],
+                    "abstained": False,
+                },
+                "beta": {
+                    "schema_version": "councli.review.v1",
+                    "kind": "review.verdict",
+                    "valid": True,
+                    "verdict": "approve",
+                    "confidence": 0.4,
+                    "blocking_concerns": [],
+                    "abstained": False,
+                },
             },
             ["alpha", "beta"],
             attempt=1,
@@ -661,6 +700,40 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(review_decision["verdict"], "needs_user")
         self.assertEqual(review_decision["counts"]["approve"], 0)
         self.assertEqual(review_decision["low_confidence_reviews"], {"alpha": 0.4, "beta": 0.4})
+
+    def test_schema_less_votes_and_reviews_do_not_drive_decisions(self) -> None:
+        decision = decide_council(
+            {
+                "alpha": {
+                    "preferred_plan": "plan:alpha:1",
+                    "preferred_executor": "alpha",
+                    "confidence": 1.0,
+                    "blocking_concerns": [],
+                    "abstained": False,
+                },
+                "beta": empty_vote("invalid JSON vote"),
+            },
+            ["alpha", "beta"],
+            ["plan:alpha:1", "plan:beta:1"],
+        )
+        self.assertFalse(decision["approved"])
+        self.assertEqual(decision["abstentions"]["alpha"], "invalid vote schema")
+
+        review_decision = decide_review(
+            {
+                "alpha": {
+                    "verdict": "approve",
+                    "confidence": 1.0,
+                    "blocking_concerns": [],
+                    "abstained": False,
+                },
+                "beta": empty_review("invalid JSON review"),
+            },
+            ["alpha", "beta"],
+            attempt=1,
+        )
+        self.assertFalse(review_decision["approved"])
+        self.assertEqual(review_decision["abstentions"]["alpha"], "invalid review schema")
 
     def test_projection_includes_implementation_and_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -947,6 +1020,37 @@ class EventArchitectureTests(unittest.TestCase):
 
             state = json.loads((latest / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["implementation"]["applied"]["root"], str(root))
+
+    def test_cli_apply_rejects_invalid_decision_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            subprocess.run(["git", "add", "fake_agent.py", "scenario.json"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "add fake agent"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            proc, latest = self.run_fake_councli(root)
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            state_path = latest / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["decision"].pop("schema_version", None)
+            state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            rejected = subprocess.run(
+                [PYTHON, "-m", "councli", "apply", "latest", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                env=self.experimental_env(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(rejected.returncode, 2, rejected.stdout + rejected.stderr)
+            self.assertIn("invalid decision metadata", rejected.stdout + rejected.stderr)
+            self.assertIn("council decision has invalid schema_version", rejected.stdout + rejected.stderr)
 
     def test_cli_chat_runs_interactive_dry_council_and_local_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

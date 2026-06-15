@@ -90,6 +90,8 @@ EXPERIMENTAL_ENV = "COUNCLI_EXPERIMENTAL"
 REQUEST_SCHEMA_VERSION = "councli.request.v1"
 PARTICIPANTS_SCHEMA_VERSION = "councli.participants.v1"
 DECISION_SCHEMA_VERSION = "councli.decision.v1"
+VOTE_SCHEMA_VERSION = "councli.vote.v1"
+REVIEW_SCHEMA_VERSION = "councli.review.v1"
 ARTIFACT_ROOTS = {
     "raw-log": ("session-recordings",),
     "session-archive": ("session-archives",),
@@ -3270,6 +3272,7 @@ def apply_run(
     state = load_run_state(run_dir)
     run_completed = state.get("run_completed") or {}
     implementation = state.get("implementation") or {}
+    decision = state.get("decision") or {}
     review_decision = state.get("review_decision") or {}
 
     if not run_completed.get("implemented"):
@@ -3278,6 +3281,12 @@ def apply_run(
 
     status = str(run_completed.get("status") or "")
     review_verdict = str(review_decision.get("verdict") or "")
+    validation_errors = validate_apply_decisions(decision=decision, review_decision=review_decision, status=status)
+    if validation_errors:
+        console.print("[red]Run has invalid decision metadata; cannot apply safely.[/]")
+        for error in validation_errors:
+            console.print(f"- {error}")
+        raise typer.Exit(code=2)
     if review_verdict != "accepted":
         if not (allow_unreviewed and status == "unreviewed_implementation"):
             console.print(
@@ -3336,6 +3345,30 @@ def apply_run(
     ledger.render()
     console.print(f"[green]Applied:[/] {run_dir.name}")
     console.print(f"Patch: {patch_path}")
+
+
+def validate_apply_decisions(*, decision: dict[str, Any], review_decision: dict[str, Any], status: str) -> list[str]:
+    errors: list[str] = []
+    if decision.get("schema_version") != DECISION_SCHEMA_VERSION:
+        errors.append("council decision has invalid schema_version")
+    if decision.get("kind") != "council.decision":
+        errors.append("council decision has invalid kind")
+    if decision.get("approved") is not True and status != "unreviewed_implementation":
+        errors.append("council decision is not approved")
+    if review_decision.get("schema_version") != DECISION_SCHEMA_VERSION:
+        errors.append("review decision has invalid schema_version")
+    if review_decision.get("kind") != "review.decision":
+        errors.append("review decision has invalid kind")
+    verdict = str(review_decision.get("verdict") or "")
+    if verdict == "accepted":
+        if review_decision.get("approved") is not True:
+            errors.append("accepted review decision is not approved")
+    elif status == "unreviewed_implementation":
+        if verdict != "unreviewed_implementation":
+            errors.append("unreviewed implementation is missing matching review decision")
+    else:
+        errors.append("review decision is not accepted")
+    return errors
 
 
 def print_available_participants(runners: dict[str, AgentRunner], *, title: str = "Configured participants") -> None:
@@ -3747,6 +3780,40 @@ def verify_run_artifacts(run_dir: Path, *, allow_malformed_events: bool = False)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             errors.append(f"could not parse {rel}: {exc}")
             continue
+        artifact_errors, artifact_warnings = validate_schema_artifact(
+            artifact,
+            rel=rel,
+            expected_schema=expected_schema,
+            allowed_kinds=allowed_kinds,
+        )
+        errors.extend(artifact_errors)
+        warnings.extend(artifact_warnings)
+
+    for path in sorted((run_dir / "votes").glob("*.json")):
+        rel = path.relative_to(run_dir).as_posix()
+        try:
+            artifact = read_json(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"could not parse {rel}: {exc}")
+            continue
+        artifact_errors, artifact_warnings = validate_schema_artifact(
+            artifact,
+            rel=rel,
+            expected_schema=VOTE_SCHEMA_VERSION,
+            allowed_kinds={"council.vote"},
+        )
+        errors.extend(artifact_errors)
+        warnings.extend(artifact_warnings)
+
+    for path in sorted((run_dir / "reviews").glob("attempt-*/*.json")):
+        rel = path.relative_to(run_dir).as_posix()
+        try:
+            artifact = read_json(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"could not parse {rel}: {exc}")
+            continue
+        expected_schema = DECISION_SCHEMA_VERSION if path.name == "decision.json" else REVIEW_SCHEMA_VERSION
+        allowed_kinds = {"review.decision"} if path.name == "decision.json" else {"review.verdict"}
         artifact_errors, artifact_warnings = validate_schema_artifact(
             artifact,
             rel=rel,

@@ -27,6 +27,8 @@ OUTPUT_FILE_ATTEMPTS = 2
 REQUEST_SCHEMA_VERSION = "councli.request.v1"
 PARTICIPANTS_SCHEMA_VERSION = "councli.participants.v1"
 DECISION_SCHEMA_VERSION = "councli.decision.v1"
+VOTE_SCHEMA_VERSION = "councli.vote.v1"
+REVIEW_SCHEMA_VERSION = "councli.review.v1"
 
 
 @dataclass(frozen=True)
@@ -373,7 +375,8 @@ def run_review_phase(
     state.ledger.render()
     if not reviewers:
         decision = decide_review({}, [], attempt=attempt, min_confidence=min_confidence or state.min_confidence)
-        state.ledger.append("review.finalized", phase="review", payload=decision)
+        decision_ref = write_review_decision_artifact(state.run_dir, decision, attempt=attempt)
+        state.ledger.append("review.finalized", phase="review", payload=decision, refs={"decision": decision_ref})
         state.ledger.append("phase.completed", phase="review", payload={"attempt": attempt, "participants": []})
         state.ledger.render()
         return decision
@@ -441,7 +444,8 @@ def run_review_phase(
         attempt=attempt,
         min_confidence=min_confidence or state.min_confidence,
     )
-    state.ledger.append("review.finalized", phase="review", payload=decision)
+    decision_ref = write_review_decision_artifact(state.run_dir, decision, attempt=attempt)
+    state.ledger.append("review.finalized", phase="review", payload=decision, refs={"decision": decision_ref})
     state.ledger.append(
         "phase.completed",
         phase="review",
@@ -785,6 +789,12 @@ def write_review_artifact(run_dir: Path, item: BlackboardItem, *, attempt: int) 
     write_text(run_dir / "review" / f"attempt-{attempt}" / f"{item.participant}.{suffix}", body + "\n")
 
 
+def write_review_decision_artifact(run_dir: Path, decision: dict, *, attempt: int) -> str:
+    path = run_dir / "reviews" / f"attempt-{attempt}" / "decision.json"
+    write_json(path, decision)
+    return path.relative_to(run_dir).as_posix()
+
+
 def write_blackboard(state: CouncilState, *, decision: dict | None = None) -> None:
     lines = [
         f"# councli blackboard: {state.council_id}",
@@ -863,6 +873,9 @@ def normalize_vote(raw: object) -> dict:
         concerns = [str(concerns)]
     confidence = normalize_confidence(raw.get("confidence", 0.0))
     return {
+        "schema_version": VOTE_SCHEMA_VERSION,
+        "kind": "council.vote",
+        "valid": True,
         "preferred_plan": raw.get("preferred_plan"),
         "preferred_executor": raw.get("preferred_executor"),
         "confidence": max(0.0, min(1.0, confidence)),
@@ -883,6 +896,9 @@ def normalize_review(raw: object) -> dict:
         return empty_review(f"invalid review verdict: {verdict or '(empty)'}")
     confidence = normalize_confidence(raw.get("confidence", 0.0))
     return {
+        "schema_version": REVIEW_SCHEMA_VERSION,
+        "kind": "review.verdict",
+        "valid": True,
         "verdict": verdict,
         "confidence": max(0.0, min(1.0, confidence)),
         "blocking_concerns": [str(item) for item in concerns if str(item).strip()],
@@ -893,6 +909,9 @@ def normalize_review(raw: object) -> dict:
 
 def empty_vote(reason: str) -> dict:
     return {
+        "schema_version": VOTE_SCHEMA_VERSION,
+        "kind": "council.vote",
+        "valid": False,
         "preferred_plan": None,
         "preferred_executor": None,
         "confidence": 0.0,
@@ -905,6 +924,9 @@ def empty_vote(reason: str) -> dict:
 
 def empty_review(reason: str) -> dict:
     return {
+        "schema_version": REVIEW_SCHEMA_VERSION,
+        "kind": "review.verdict",
+        "valid": False,
         "verdict": None,
         "confidence": 0.0,
         "blocking_concerns": [],
@@ -966,6 +988,9 @@ def synthetic_phase_item(
 
 def synthetic_vote(name: str, *, preferred: str) -> dict:
     return {
+        "schema_version": VOTE_SCHEMA_VERSION,
+        "kind": "council.vote",
+        "valid": True,
         "preferred_plan": f"plan:{preferred}:1",
         "preferred_executor": preferred,
         "confidence": 1.0,
@@ -976,6 +1001,9 @@ def synthetic_vote(name: str, *, preferred: str) -> dict:
 
 def synthetic_review(name: str) -> dict:
     return {
+        "schema_version": REVIEW_SCHEMA_VERSION,
+        "kind": "review.verdict",
+        "valid": True,
         "verdict": "approve",
         "confidence": 1.0,
         "blocking_concerns": [],
@@ -994,6 +1022,8 @@ def decide_council(
     plan_ids = plan_ids or [f"plan:{name}:1" for name in participants]
     if not participants:
         return {
+            "schema_version": DECISION_SCHEMA_VERSION,
+            "kind": "council.decision",
             "approved": False,
             "status": "no_participants",
             "selected_plan": None,
@@ -1006,10 +1036,18 @@ def decide_council(
             "min_confidence": min_confidence,
             "reason": "No participants are available.",
         }
-    low_confidence = low_confidence_items(votes, min_confidence=min_confidence)
+    validated_votes: dict[str, dict] = {}
+    invalid_votes: dict[str, str] = {}
+    for voter, vote in votes.items():
+        invalid_reason = validate_vote_for_decision(vote, participants=participants, plan_ids=plan_ids)
+        if invalid_reason:
+            invalid_votes[voter] = invalid_reason
+        else:
+            validated_votes[voter] = vote
+    low_confidence = low_confidence_items(validated_votes, min_confidence=min_confidence)
     countable_votes = {
         voter: vote
-        for voter, vote in votes.items()
+        for voter, vote in validated_votes.items()
         if not vote.get("abstained") and voter not in low_confidence
     }
     normalized_votes = normalize_vote_choices(countable_votes, participants, plan_ids)
@@ -1019,7 +1057,7 @@ def decide_council(
     selected_executor, executor_count = winner(executor_counts)
     blocking = [
         concern
-        for vote in votes.values()
+        for vote in validated_votes.values()
         if not vote.get("abstained")
         for concern in vote.get("blocking_concerns", [])
         if str(concern).strip()
@@ -1029,6 +1067,7 @@ def decide_council(
         for voter, vote in votes.items()
         if vote.get("abstained")
     }
+    abstentions.update(invalid_votes)
     threshold = (len(participants) // 2) + 1
     approved = bool(
         selected_plan
@@ -1096,10 +1135,18 @@ def decide_review(
             "reason": "No non-executor reviewers are available.",
         }
     counts = {"approve": 0, "request_changes": 0, "replace": 0}
-    low_confidence = low_confidence_items(reviews, min_confidence=min_confidence)
+    validated_reviews: dict[str, dict] = {}
+    invalid_reviews: dict[str, str] = {}
+    for reviewer, review in reviews.items():
+        invalid_reason = validate_review_for_decision(review)
+        if invalid_reason:
+            invalid_reviews[reviewer] = invalid_reason
+        else:
+            validated_reviews[reviewer] = review
+    low_confidence = low_confidence_items(validated_reviews, min_confidence=min_confidence)
     countable_reviews = {
         reviewer: review
-        for reviewer, review in reviews.items()
+        for reviewer, review in validated_reviews.items()
         if not review.get("abstained") and reviewer not in low_confidence
     }
     for review in countable_reviews.values():
@@ -1108,7 +1155,7 @@ def decide_review(
             counts[verdict] += 1
     blocking = [
         concern
-        for review in reviews.values()
+        for review in validated_reviews.values()
         if not review.get("abstained")
         for concern in review.get("blocking_concerns", [])
         if str(concern).strip()
@@ -1118,6 +1165,7 @@ def decide_review(
         for reviewer, review in reviews.items()
         if review.get("abstained")
     }
+    abstentions.update(invalid_reviews)
     active_reviewers = len(reviewers) - len(abstentions)
     countable_reviewers = active_reviewers - len(low_confidence)
     threshold = (active_reviewers // 2) + 1 if active_reviewers else 1
@@ -1184,6 +1232,48 @@ def low_confidence_items(items: dict[str, dict], *, min_confidence: float) -> di
         for name, item in items.items()
         if not item.get("abstained") and normalize_confidence(item.get("confidence", 0.0)) < min_confidence
     }
+
+
+def validate_vote_for_decision(vote: dict, *, participants: list[str], plan_ids: list[str]) -> str:
+    if not isinstance(vote, dict):
+        return "vote artifact is not an object"
+    if vote.get("abstained"):
+        return ""
+    if vote.get("schema_version") != VOTE_SCHEMA_VERSION:
+        return "invalid vote schema"
+    if vote.get("kind") != "council.vote":
+        return "invalid vote kind"
+    if vote.get("valid") is not True:
+        return str(vote.get("error") or vote.get("reason") or "invalid vote artifact")
+    if vote.get("preferred_executor") not in participants:
+        return "invalid preferred_executor"
+    preferred_plan = vote.get("preferred_plan")
+    participant_to_plan = {name: f"plan:{name}:1" for name in participants}
+    if preferred_plan not in set(plan_ids) and preferred_plan not in participant_to_plan:
+        return "invalid preferred_plan"
+    confidence = vote.get("confidence")
+    if not isinstance(confidence, int | float) or not 0.0 <= float(confidence) <= 1.0:
+        return "invalid vote confidence"
+    return ""
+
+
+def validate_review_for_decision(review: dict) -> str:
+    if not isinstance(review, dict):
+        return "review artifact is not an object"
+    if review.get("abstained"):
+        return ""
+    if review.get("schema_version") != REVIEW_SCHEMA_VERSION:
+        return "invalid review schema"
+    if review.get("kind") != "review.verdict":
+        return "invalid review kind"
+    if review.get("valid") is not True:
+        return str(review.get("error") or review.get("reason") or "invalid review artifact")
+    if review.get("verdict") not in {"approve", "request_changes", "replace"}:
+        return "invalid review verdict"
+    confidence = review.get("confidence")
+    if not isinstance(confidence, int | float) or not 0.0 <= float(confidence) <= 1.0:
+        return "invalid review confidence"
+    return ""
 
 
 def normalize_vote_choices(votes: dict[str, dict], participants: list[str], plan_ids: list[str]) -> dict[str, dict]:
