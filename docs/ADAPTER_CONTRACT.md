@@ -7,8 +7,9 @@ eventually implement.
 
 The current implementation has useful primitives, but it is still too coarse:
 
-- `health()` checks binary/version and can run a configured bounded
-  `readiness_command`, but most adapters still need safe command defaults;
+- `health()` checks binary/version and can run a bounded `readiness_command`;
+  built-in adapters include safe default probes, but richer machine-readable
+  readiness remains adapter-specific future work;
 - intent readiness is capability-aware for the public MVP intents;
 - `broadcast_read_only` is a boolean, not a permission model;
 - authentication, quota, model readiness, and provider selection are normalized
@@ -428,10 +429,11 @@ It also makes cleanup and retry safer:
 4. Add JSON Schema files for adapter manifests and response sidecars.
 5. Replace `broadcast_read_only` with command-level capabilities and an
    explicit fallback policy.
-6. Add adapter-specific default probes for auth, model, quota, and native
-   session readiness where each CLI exposes safe, cheap diagnostics. The generic
-   `readiness_command` hook is in place.
-7. Pin resolved binary path/version in trust metadata or warn on drift.
+6. Keep improving adapter-specific probes for auth, model, quota, and native
+   session readiness where each CLI exposes richer safe diagnostics. The
+   generic `readiness_command` hook and built-in defaults are in place.
+7. Add stable version reporting to trust metadata. Resolved binary path and
+   executable hash drift are already pinned.
 8. Update routing to select commands by intent and policy instead of
    `health().available`.
 

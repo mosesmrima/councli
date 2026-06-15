@@ -1388,6 +1388,13 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(kimi.command, ["kimi", "--prompt", "{prompt}"])
         self.assertEqual(kimi.start_command, ["kimi"])
 
+    def test_default_agents_include_safe_readiness_probes(self) -> None:
+        self.assertEqual(DEFAULT_CONFIG.agents["codex"].readiness_command, ["codex", "doctor"])
+        self.assertEqual(DEFAULT_CONFIG.agents["claude"].readiness_command, ["claude", "auth", "status"])
+        self.assertEqual(DEFAULT_CONFIG.agents["agy"].readiness_command, ["agy", "models"])
+        self.assertEqual(DEFAULT_CONFIG.agents["codewhale"].readiness_command, ["codewhale", "doctor"])
+        self.assertEqual(DEFAULT_CONFIG.agents["kimi"].readiness_command, ["kimi", "doctor"])
+
     def test_task_brief_records_native_session_registry(self) -> None:
         from councli.native import reconcile_session_registry, upsert_session, write_task_brief
 

@@ -439,8 +439,9 @@ Use existing standards and tools where they fit:
   yolo/auto. That is invalid according to Kimi CLI docs and contradicts the
   current default config and tests. The correct headless Kimi command is
   `kimi --prompt {prompt}`.
-- `doctor --json` reports intent readiness, but most adapters still need safe
-  default probes for auth/model/quota.
+- `doctor --json` reports intent readiness and built-in adapters have safe
+  default probes, but richer auth/model/quota interpretation remains
+  adapter-specific work.
 - Shared-turn trailers are still text fallbacks. `/vote` decisions now require
   valid response sidecars; review, executor selection, and apply need the same
   stricter validation.

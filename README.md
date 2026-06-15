@@ -402,8 +402,8 @@ readiness. Hidden experimental worktree execution/review commands still exist
 for development, but they are not the MVP path and require
 `COUNCLI_EXPERIMENTAL=1`. Next steps are:
 
-1. Configure adapter-specific readiness probes for more assistants where each
-   CLI exposes a safe, cheap diagnostic command.
+1. Keep improving adapter-specific readiness probes where each CLI exposes a
+   richer safe diagnostic command.
 2. Add a richer interactive TUI once the protocol proves useful.
 3. Decide whether to delete or separately package the hidden execution/review
    prototype.
