@@ -85,6 +85,7 @@ app.add_typer(sessions_app, name="sessions")
 app.add_typer(artifacts_app, name="artifacts")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
+EXPERIMENTAL_ENV = "COUNCLI_EXPERIMENTAL"
 ARTIFACT_ROOTS = {
     "raw-log": ("session-recordings",),
     "session-archive": ("session-archives",),
@@ -132,6 +133,14 @@ def load_config(root: Path, *, auto_init: bool = False, quiet: bool = False):
     except (ConfigTrustError, ProjectIdentityError, ValueError) as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=2) from exc
+
+
+def require_experimental(feature: str) -> None:
+    if os.environ.get(EXPERIMENTAL_ENV) == "1":
+        return
+    console.print(f"[red]{feature} is experimental and not part of the MVP surface.[/]")
+    console.print(f"Set {EXPERIMENTAL_ENV}=1 only if you intentionally want this hidden prototype.")
+    raise typer.Exit(code=2)
 
 
 RootOpt = Annotated[
@@ -620,6 +629,7 @@ def sessions_import(
     ] = False,
 ) -> None:
     """Import a native assistant session id/path into the councli registry."""
+    require_experimental("sessions import")
     config = load_config(root)
     runners = build_runners(config.agents)
     if agent not in runners:
@@ -726,6 +736,7 @@ def sessions_resume(
     ] = True,
 ) -> None:
     """Relaunch a native assistant from an imported native session id when supported."""
+    require_experimental("sessions resume")
     config = load_config(root)
     runners = build_runners(config.agents)
     if agent not in runners:
@@ -838,6 +849,7 @@ def sessions_send(
     marker: Annotated[bool, typer.Option("--marker/--no-marker", help="Append the agent done marker.")] = True,
 ) -> None:
     """Send a message into a tmux-backed agent session."""
+    require_experimental("sessions send")
     config = load_config(root)
     runners = build_runners(config.agents)
     if agent not in runners:
@@ -897,6 +909,7 @@ def sessions_ask(
     ] = None,
 ) -> None:
     """Send a message, wait for the done marker, and print the captured response."""
+    require_experimental("sessions ask")
     config = load_config(root)
     runners = build_runners(config.agents)
     if agent not in runners:
@@ -928,6 +941,7 @@ def sessions_relay(
     root: RootOpt = Path.cwd(),
 ) -> None:
     """Ask one tmux-backed agent, then relay its response to another agent."""
+    require_experimental("sessions relay")
     config = load_config(root)
     runners = build_runners(config.agents)
     missing = [name for name in (source, target) if name not in runners]
@@ -1481,6 +1495,7 @@ def reason(
     ] = False,
 ) -> None:
     """Deprecated: run a deliberate shared turn."""
+    require_experimental("councli reason")
     config = load_config(root)
     runners = build_runners(config.agents)
     console.print("[yellow]`councli reason` is deprecated; using the shared /deliberate engine.[/]")
@@ -2864,6 +2879,7 @@ def run(
     ] = False,
 ) -> None:
     """Deliberate, choose an executor, and run that executor in a git worktree."""
+    require_experimental("councli run")
     require_git_repo(root)
     if not allow_dirty:
         ensure_clean_enough(root)
@@ -3077,6 +3093,7 @@ def apply_run(
     ] = False,
 ) -> None:
     """Apply an implemented councli run patch to the current worktree."""
+    require_experimental("councli apply")
     require_git_repo(root)
     ensure_clean_enough(root)
     run_dir = resolve_run_dir(root, run)

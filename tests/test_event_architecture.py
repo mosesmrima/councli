@@ -153,6 +153,11 @@ class EventArchitectureTests(unittest.TestCase):
         trust_project_config(root, reason="test", repair_identity=True)
         return root, scenario_path
 
+    def experimental_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env["COUNCLI_EXPERIMENTAL"] = "1"
+        return env
+
     def run_fake_councli(self, root: Path, *extra_args: str) -> tuple[subprocess.CompletedProcess[str], Path]:
         proc = subprocess.run(
             [
@@ -167,6 +172,7 @@ class EventArchitectureTests(unittest.TestCase):
                 *extra_args,
             ],
             cwd=REPO_ROOT,
+            env=self.experimental_env(),
             text=True,
             capture_output=True,
             check=False,
@@ -796,6 +802,7 @@ class EventArchitectureTests(unittest.TestCase):
             dry = subprocess.run(
                 [PYTHON, "-m", "councli", "apply", "latest", "-C", str(root), "--dry-run"],
                 cwd=REPO_ROOT,
+                env=self.experimental_env(),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -803,6 +810,7 @@ class EventArchitectureTests(unittest.TestCase):
             applied = subprocess.run(
                 [PYTHON, "-m", "councli", "apply", "latest", "-C", str(root)],
                 cwd=REPO_ROOT,
+                env=self.experimental_env(),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -908,6 +916,24 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertIn("attach", sessions_help.stdout)
         for hidden in ("import", "resume", "send", "ask", "relay"):
             self.assertNotIn(hidden, sessions_help.stdout)
+
+    def test_hidden_prototypes_require_experimental_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            for args in (
+                ["run", "noop", "-C", str(root), "--allow-dirty"],
+                ["apply", "latest", "-C", str(root), "--dry-run"],
+                ["sessions", "import", "alpha", "-C", str(root)],
+            ):
+                proc = subprocess.run(
+                    [PYTHON, "-m", "councli", *args],
+                    cwd=REPO_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+                self.assertIn("COUNCLI_EXPERIMENTAL=1", proc.stdout + proc.stderr)
 
     def test_deliberate_slash_command_uses_shared_turn_rounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1513,6 +1539,7 @@ class EventArchitectureTests(unittest.TestCase):
             proc = subprocess.run(
                 [PYTHON, "-m", "councli", "sessions", "import", "alpha", "-C", str(root)],
                 cwd=REPO_ROOT,
+                env=self.experimental_env(),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -1608,6 +1635,7 @@ class EventArchitectureTests(unittest.TestCase):
                         "--no-marker",
                     ],
                     cwd=REPO_ROOT,
+                    env=self.experimental_env(),
                     text=True,
                     capture_output=True,
                     check=False,
@@ -1647,6 +1675,7 @@ class EventArchitectureTests(unittest.TestCase):
                         "native-123",
                     ],
                     cwd=REPO_ROOT,
+                    env=self.experimental_env(),
                     text=True,
                     capture_output=True,
                     check=False,
@@ -1666,6 +1695,7 @@ class EventArchitectureTests(unittest.TestCase):
                         "--no-attach",
                     ],
                     cwd=REPO_ROOT,
+                    env=self.experimental_env(),
                     text=True,
                     capture_output=True,
                     check=False,

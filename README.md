@@ -378,7 +378,8 @@ Kimi Code is supported with:
 This is v0. It now focuses the public surface on shared conversation,
 deliberation, explicit voting, native attach, durable artifacts, and adapter
 readiness. Hidden experimental worktree execution/review commands still exist
-for development, but they are not the MVP path. Next steps are:
+for development, but they are not the MVP path and require
+`COUNCLI_EXPERIMENTAL=1`. Next steps are:
 
 1. Configure adapter-specific readiness probes for more assistants where each
    CLI exposes a safe, cheap diagnostic command.

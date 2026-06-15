@@ -30,7 +30,7 @@ Stronger coordination is explicit:
 - `/vote <prompt>` asks for an explicit decision artifact.
 - Hidden experimental execution/review commands may choose executors, use
   isolated git worktrees, and collect peer review, but they are not the MVP user
-  path.
+  path and require `COUNCLI_EXPERIMENTAL=1`.
 
 The design rule is: `councli` provides the room, memory, routing, and safety
 rails; the assistants provide the intelligence. Voting and executor selection
@@ -383,6 +383,10 @@ autocomplete, permission prompts, MCP interactions, and hotkeys stay native.
 ## Hidden worktree execution prototype
 
 The hidden execution prototype creates a git worktree outside the repository:
+
+It is intentionally gated behind `COUNCLI_EXPERIMENTAL=1`, because the MVP
+control plane is shared conversation, explicit deliberation/voting, native
+attach, broadcast, and artifact inspection.
 
 ```text
 ../.councli-worktrees/<repo-name>/<run-id>-<executor>
