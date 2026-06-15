@@ -1605,6 +1605,59 @@ class EventArchitectureTests(unittest.TestCase):
             )
             self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
 
+    def test_binary_hash_drift_requires_retrust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            tool = bin_dir / "fake-agent"
+            tool.write_text("#!/bin/sh\necho fake agent before\n", encoding="utf-8")
+            tool.chmod(0o755)
+
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["binary"] = "fake-agent"
+            raw["agents"]["alpha"]["command"] = ["fake-agent", "{prompt}"]
+            raw["agents"]["alpha"]["broadcast_command"] = ["fake-agent", "{prompt}"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+            trusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted.returncode, 0, trusted.stdout + trusted.stderr)
+
+            tool.write_text("#!/bin/sh\necho fake agent after\n", encoding="utf-8")
+            tool.chmod(0o755)
+
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("Trusted assistant binary content changed", blocked.stdout + blocked.stderr)
+            self.assertIn("alpha", blocked.stdout + blocked.stderr)
+
+            retrusted = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(retrusted.returncode, 0, retrusted.stdout + retrusted.stderr)
+
     def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")

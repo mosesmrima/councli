@@ -131,11 +131,13 @@ councli show latest
 `councli init` writes `.councli/config.yaml` in the current project.
 Assistant command and transport fields in that file are pinned in user-local councli state
 (`$COUNCLI_STATE_HOME`, `$XDG_STATE_HOME/councli`, or
-`~/.local/state/councli`). If you edit command templates, binaries, backend,
-enabled flags, broadcast flags, session names, or tmux input settings, review
-the file and run `councli trust` before running assistant commands again. If a
-project was intentionally moved or renamed, run `councli trust --repair-identity`
-after reviewing the config.
+`~/.local/state/councli`). The trust pin also records resolved binary paths and
+executable hashes for enabled agents. If you edit command templates, binaries,
+backend, enabled flags, broadcast flags, session names, or tmux input settings,
+or if an installed assistant binary changes, review the file and run
+`councli trust` before running assistant commands again. If a project was
+intentionally moved or renamed, run `councli trust --repair-identity` after
+reviewing the config.
 
 Each agent has:
 

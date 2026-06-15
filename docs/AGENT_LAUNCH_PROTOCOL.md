@@ -538,9 +538,9 @@ trusted.
 Required safeguards:
 
 - user-local trust pin for command-bearing fields;
-- resolved binary path recorded at trust time;
-- version recorded when available;
-- warning or retrust on binary path drift;
+- resolved binary path and executable hash recorded at trust time;
+- version reported when available;
+- retrust on binary path or executable content drift;
 - no shell-string command interpolation;
 - prompt placeholders must be standalone argv tokens unless explicitly allowed;
 - `.councli/` should remain private and gitignored;

@@ -421,7 +421,8 @@ def assert_binary_paths_trusted(root: Path, raw: dict[str, Any], trust: dict[str
     if not isinstance(trusted, dict):
         return
     current = resolved_agent_binaries(raw)
-    drifts: list[str] = []
+    path_drifts: list[str] = []
+    hash_drifts: list[str] = []
     for name, info in current.items():
         if not info.get("enabled", True):
             continue
@@ -429,19 +430,38 @@ def assert_binary_paths_trusted(root: Path, raw: dict[str, Any], trust: dict[str
         if not isinstance(pinned, dict) or "path" not in pinned:
             continue
         if pinned.get("path") != info.get("path"):
-            drifts.append(
+            path_drifts.append(
                 "{name}: trusted={trusted} current={current}".format(
                     name=name,
                     trusted=pinned.get("path") or "(missing)",
                     current=info.get("path") or "(missing)",
                 )
             )
-    if drifts:
-        detail = "\n".join(f"- {line}" for line in drifts)
+            continue
+        pinned_hash = pinned.get("sha256")
+        current_hash = info.get("sha256")
+        if pinned_hash and current_hash and pinned_hash != current_hash:
+            hash_drifts.append(
+                "{name}: path={path} trusted_sha256={trusted_hash} current_sha256={current_hash}".format(
+                    name=name,
+                    path=info.get("path") or "(missing)",
+                    trusted_hash=pinned_hash,
+                    current_hash=current_hash,
+                )
+            )
+    if path_drifts:
+        detail = "\n".join(f"- {line}" for line in path_drifts)
         raise ConfigTrustError(
             "Trusted assistant binary path changed after config trust:\n"
             f"{detail}\n"
             "Review installed assistant binaries and PATH, then run: councli trust"
+        )
+    if hash_drifts:
+        detail = "\n".join(f"- {line}" for line in hash_drifts)
+        raise ConfigTrustError(
+            "Trusted assistant binary content changed after config trust:\n"
+            f"{detail}\n"
+            "Review installed assistant binaries and rerun: councli trust"
         )
 
 
@@ -487,8 +507,20 @@ def resolved_agent_binaries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "binary": binary,
             "enabled": value.get("enabled", True) is not False,
             "path": str(Path(resolved).resolve()) if resolved else None,
+            "sha256": file_sha256(Path(resolved).resolve()) if resolved else None,
         }
     return result
+
+
+def file_sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def project_identity(root: Path) -> dict[str, str]:
