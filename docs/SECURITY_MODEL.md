@@ -201,12 +201,14 @@ Attack paths:
 Current controls:
 
 - `health()` resolves binaries with `shutil.which`;
-- trust pins command templates but not necessarily resolved binary paths.
+- trust pins command templates and resolved executable paths for enabled
+  agents;
+- load-time trust checks reject resolved binary path drift until the user
+  reviews and reruns `councli trust`.
 
 Hardening:
 
-- record resolved executable path and optionally hash/version at trust time;
-- warn when the resolved path changes;
+- optionally record binary version or executable hash at trust time;
 - allow absolute command paths in trusted config;
 - show binary path in `doctor` and security reports.
 
@@ -358,7 +360,7 @@ Not yet acceptable for shared/team/production use:
 - no structured secret redaction;
 - no adapter capability policy;
 - no foreground Ctrl-C process-group cleanup for active participant calls;
-- no binary path drift detection;
+- no binary version/hash drift detection;
 - no stable security audit report;
 - no sandbox wrapper policy;
 - no formal schema for participant responses.
@@ -367,7 +369,8 @@ Not yet acceptable for shared/team/production use:
 
 1. Add a security section to `doctor` showing command permissions, resolved
    binary paths, yolo/full-permission commands, raw-log status, and trust state.
-2. Pin and warn on resolved binary path drift.
+2. Extend trust pins from resolved binary path drift to optional binary
+   version/hash drift.
 3. Add adapter capabilities and policy checks for chat, broadcast, deliberate,
    vote, run, and review.
 4. Add run-local locks and response sidecars so malformed output cannot corrupt

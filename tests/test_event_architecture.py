@@ -1305,6 +1305,71 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertNotEqual(trusted.returncode, 0)
             self.assertIn("{prompt} must be a standalone argv token", trusted.stdout + trusted.stderr)
 
+    def test_binary_path_drift_requires_retrust(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            bin_a = Path(tmp) / "bin-a"
+            bin_b = Path(tmp) / "bin-b"
+            bin_a.mkdir()
+            bin_b.mkdir()
+            for index, directory in enumerate((bin_a, bin_b), start=1):
+                tool = directory / "fake-agent"
+                tool.write_text(f"#!/bin/sh\necho fake agent {index}\n", encoding="utf-8")
+                tool.chmod(0o755)
+
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["binary"] = "fake-agent"
+            raw["agents"]["alpha"]["command"] = ["fake-agent", "{prompt}"]
+            raw["agents"]["alpha"]["broadcast_command"] = ["fake-agent", "{prompt}"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            env_a = os.environ.copy()
+            env_a["PATH"] = f"{bin_a}{os.pathsep}{env_a.get('PATH', '')}"
+            trusted_a = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env_a,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted_a.returncode, 0, trusted_a.stdout + trusted_a.stderr)
+
+            env_b = os.environ.copy()
+            env_b["PATH"] = f"{bin_b}{os.pathsep}{env_b.get('PATH', '')}"
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env_b,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("Trusted assistant binary path changed", blocked.stdout + blocked.stderr)
+            self.assertIn("alpha", blocked.stdout + blocked.stderr)
+
+            trusted_b = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env_b,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(trusted_b.returncode, 0, trusted_b.stdout + trusted_b.stderr)
+
+            doctor = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env_b,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+
     def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")

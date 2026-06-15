@@ -375,6 +375,7 @@ def trust_project_config(
             "executable_hash": digest,
             "executable_fields": list(EXECUTABLE_AGENT_FIELDS),
             "native_fields": list(TRUSTED_NATIVE_FIELDS),
+            "binaries": resolved_agent_binaries(raw),
         },
     }
     trust_path = project_trust_path(root)
@@ -404,6 +405,36 @@ def assert_project_config_trusted(root: Path, raw: dict[str, Any]) -> None:
             f"Project config trusted agent fields changed: {project_config_path(root)}\n"
             "Review assistant commands and transport settings, then run: councli trust"
         )
+    assert_binary_paths_trusted(root, raw, trust)
+
+
+def assert_binary_paths_trusted(root: Path, raw: dict[str, Any], trust: dict[str, Any]) -> None:
+    trusted = ((trust.get("config") or {}).get("binaries")) if isinstance(trust, dict) else None
+    if not isinstance(trusted, dict):
+        return
+    current = resolved_agent_binaries(raw)
+    drifts: list[str] = []
+    for name, info in current.items():
+        if not info.get("enabled", True):
+            continue
+        pinned = trusted.get(name)
+        if not isinstance(pinned, dict) or "path" not in pinned:
+            continue
+        if pinned.get("path") != info.get("path"):
+            drifts.append(
+                "{name}: trusted={trusted} current={current}".format(
+                    name=name,
+                    trusted=pinned.get("path") or "(missing)",
+                    current=info.get("path") or "(missing)",
+                )
+            )
+    if drifts:
+        detail = "\n".join(f"- {line}" for line in drifts)
+        raise ConfigTrustError(
+            "Trusted assistant binary path changed after config trust:\n"
+            f"{detail}\n"
+            "Review installed assistant binaries and PATH, then run: councli trust"
+        )
 
 
 def executable_config_hash(raw: dict[str, Any]) -> str:
@@ -432,6 +463,24 @@ def executable_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
             if field in value
         }
     return payload
+
+
+def resolved_agent_binaries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for name, value in sorted(agents.items()):
+        if not isinstance(value, dict):
+            continue
+        binary = str(value.get("binary") or "")
+        if not binary:
+            continue
+        resolved = shutil.which(binary)
+        result[str(name)] = {
+            "binary": binary,
+            "enabled": value.get("enabled", True) is not False,
+            "path": str(Path(resolved).resolve()) if resolved else None,
+        }
+    return result
 
 
 def project_identity(root: Path) -> dict[str, str]:
