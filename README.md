@@ -254,6 +254,8 @@ Run inspection commands:
 councli status
 councli show latest
 councli show <run-id-prefix> --blackboard
+councli verify latest
+councli verify <run-id-prefix> --json
 councli artifacts list
 councli artifacts scrub --dry-run
 councli artifacts scrub --write
@@ -264,6 +266,8 @@ councli artifacts prune --older-than 30 --delete
 `status` lists recent run ids with task, participants, decision, review, and
 implementation status when present. `show` reopens a run's durable state and
 prints the paths to its blackboard, machine state, event log, and artifacts.
+`verify` checks a run's event log, refs, response sidecars, and rebuildable
+projections before you trust, export, or share the output.
 `artifacts scrub` redacts common secret-looking tokens from text artifacts and
 defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
 and snapshots by default, and only deletes when `--delete` is supplied.

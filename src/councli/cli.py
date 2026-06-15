@@ -54,7 +54,7 @@ from councli.council import (
     run_blackboard_council,
     run_review_phase,
 )
-from councli.events import EventLedger
+from councli.events import EventLedger, project_state, read_events, render_blackboard
 from councli.gitops import apply_unified_diff, create_worktree, current_commit, diff, ensure_clean_enough, require_git_repo
 from councli.native import (
     append_project_event,
@@ -1610,7 +1610,7 @@ def run_broadcast_round(
             "session_context": "headless_subprocess",
             "retry_policy": "none",
         },
-        refs={"brief": str(brief.path)},
+        refs={"brief": "brief.md"},
     )
     results: dict[str, Any] = {}
     runnable: dict[str, AgentRunner] = {}
@@ -1842,7 +1842,7 @@ def run_shared_turn(
             "intent": intent.name,
             "dry_run": dry_run,
         },
-        refs={"brief": str(brief.path)},
+        refs={"brief": "brief.md"},
     )
 
     console.rule(f"[bold]turn {run_dir.name}[/]")
@@ -3382,6 +3382,201 @@ def show(
         except OSError as exc:
             console.print(f"[red]Could not read blackboard:[/] {exc}")
             raise typer.Exit(code=2) from exc
+
+
+@app.command()
+def verify(
+    run: Annotated[str, typer.Argument(help="Run id, unique prefix, or 'latest'.")] = "latest",
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable verification JSON.")] = False,
+) -> None:
+    """Verify a councli run's events, refs, sidecars, and projections."""
+    run_dir = resolve_run_dir(root, run)
+    report = verify_run_artifacts(run_dir)
+    if json_output:
+        console.print_json(data=report)
+    else:
+        style = "green" if report["ok"] else "red"
+        console.print(f"[bold {style}]Verify {report['status']}:[/] {run_dir.name}")
+        console.print(f"Events: {report['events']}")
+        console.print(f"Refs: {report['refs_checked']}")
+        console.print(f"Sidecars: {report['sidecars_checked']}")
+        if report["errors"]:
+            console.print("[bold red]Errors[/]")
+            for error in report["errors"]:
+                console.print(f"- {error}")
+        if report["warnings"]:
+            console.print("[bold yellow]Warnings[/]")
+            for warning in report["warnings"]:
+                console.print(f"- {warning}")
+    if not report["ok"]:
+        raise typer.Exit(code=2)
+
+
+def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    refs_checked = 0
+    sidecars_checked = 0
+
+    required_files = ("events.jsonl", "state.json", "blackboard.md")
+    for filename in required_files:
+        if not (run_dir / filename).is_file():
+            errors.append(f"missing required file: {filename}")
+
+    try:
+        events = read_events(run_dir)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        events = []
+        errors.append(f"could not parse events.jsonl: {exc}")
+
+    if not events:
+        errors.append("event log is empty")
+
+    seen_event_ids: set[str] = set()
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            errors.append(f"event {index} is not an object")
+            continue
+        seq = event.get("seq")
+        event_id = str(event.get("event_id") or "")
+        if seq != index:
+            errors.append(f"event {index} has non-contiguous seq {seq!r}")
+        expected_id = f"evt_{index:06d}"
+        if event_id != expected_id:
+            errors.append(f"event {index} has event_id {event_id!r}, expected {expected_id!r}")
+        if event_id in seen_event_ids:
+            errors.append(f"duplicate event_id: {event_id}")
+        seen_event_ids.add(event_id)
+        refs = event.get("refs") if isinstance(event.get("refs"), dict) else {}
+        for key, value in refs.items():
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                warnings.append(f"event {event_id or index} ref {key} is not a string")
+                continue
+            refs_checked += 1
+            ref_path = safe_event_ref(run_dir, value)
+            if ref_path is None:
+                errors.append(f"event {event_id or index} ref {key} escapes run dir: {value}")
+                continue
+            if not ref_path.exists():
+                errors.append(f"event {event_id or index} ref {key} missing: {value}")
+
+    sidecar_paths = sorted(run_dir.rglob("*.response.json"))
+    for path in sidecar_paths:
+        sidecars_checked += 1
+        rel = path.relative_to(run_dir).as_posix()
+        try:
+            sidecar = read_json(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"could not parse sidecar {rel}: {exc}")
+            continue
+        errors.extend(validate_response_sidecar(run_dir, sidecar, rel))
+
+    if sidecars_checked == 0 and any((event.get("payload") or {}).get("mode") == "shared_turn" for event in events):
+        errors.append("shared turn has no response sidecars")
+
+    if events:
+        try:
+            expected_state = project_state(run_dir, events)
+            state_path = run_dir / "state.json"
+            if state_path.exists():
+                actual_state = read_json(state_path)
+                if actual_state != expected_state:
+                    errors.append("state.json projection is stale or inconsistent with events.jsonl")
+            blackboard_path = run_dir / "blackboard.md"
+            if blackboard_path.exists():
+                actual_blackboard = blackboard_path.read_text(encoding="utf-8")
+                expected_blackboard = render_blackboard(expected_state)
+                if actual_blackboard != expected_blackboard:
+                    errors.append("blackboard.md projection is stale or inconsistent with events.jsonl")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"could not verify projections: {exc}")
+
+    return {
+        "run": run_dir.name,
+        "path": str(run_dir),
+        "ok": not errors,
+        "status": "ok" if not errors else "failed",
+        "events": len(events),
+        "refs_checked": refs_checked,
+        "sidecars_checked": sidecars_checked,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def safe_run_ref(run_dir: Path, value: str) -> Path | None:
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return None
+    resolved = (run_dir / candidate).resolve()
+    root = run_dir.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def safe_event_ref(run_dir: Path, value: str) -> Path | None:
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return safe_run_ref(run_dir, value)
+    resolved = candidate.resolve()
+    root = run_dir.resolve()
+    try:
+        resolved.relative_to(root)
+        return resolved
+    except ValueError:
+        pass
+    project_councli = run_dir.parent.parent.resolve()
+    try:
+        resolved.relative_to(project_councli)
+    except ValueError:
+        return None
+    return resolved
+
+
+def validate_response_sidecar(run_dir: Path, sidecar: Any, rel: str) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(sidecar, dict):
+        return [f"sidecar {rel} is not an object"]
+    required = {
+        "schema_version",
+        "id",
+        "request_id",
+        "kind",
+        "participant",
+        "intent",
+        "status",
+        "body_ref",
+        "command",
+    }
+    for field in sorted(required):
+        if field not in sidecar:
+            errors.append(f"sidecar {rel} missing field: {field}")
+    if sidecar.get("schema_version") != "councli.response.v1":
+        errors.append(f"sidecar {rel} has unsupported schema_version: {sidecar.get('schema_version')!r}")
+    if sidecar.get("request_id") != run_dir.name:
+        errors.append(f"sidecar {rel} request_id does not match run: {sidecar.get('request_id')!r}")
+    if sidecar.get("kind") not in {"participant.response", "synthesis.response"}:
+        errors.append(f"sidecar {rel} has invalid kind: {sidecar.get('kind')!r}")
+    if sidecar.get("status") not in {"ok", "failed", "skipped"}:
+        errors.append(f"sidecar {rel} has invalid status: {sidecar.get('status')!r}")
+    body_ref = sidecar.get("body_ref")
+    if isinstance(body_ref, str):
+        body_path = safe_run_ref(run_dir, body_ref)
+        if body_path is None:
+            errors.append(f"sidecar {rel} body_ref escapes run dir: {body_ref}")
+        elif not body_path.exists():
+            errors.append(f"sidecar {rel} body_ref missing: {body_ref}")
+    elif "body_ref" in sidecar:
+        errors.append(f"sidecar {rel} body_ref is not a string")
+    if not isinstance(sidecar.get("command"), list):
+        errors.append(f"sidecar {rel} command is not a list")
+    return errors
 
 
 def list_run_dirs(root: Path) -> list[Path]:

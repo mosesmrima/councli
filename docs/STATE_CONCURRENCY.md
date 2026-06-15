@@ -350,10 +350,10 @@ Retention must distinguish evidence from cache:
 - raw terminal logs need redaction/retention because they may contain secrets;
 - bulk cleanup should default to `--dry-run`.
 
-Future commands:
+Current and future commands:
 
 ```text
-councli runs verify <run-id>
+councli verify <run-id>
 councli runs recover <run-id>
 councli runs prune --older-than 30d --dry-run
 councli runs gc --dry-run
@@ -388,8 +388,8 @@ Before treating the state layer as production-grade:
    projection rendering.
 2. Add schema versions to events, requests, responses, and decisions.
 3. Add `.response.json` sidecars and validate them before machine decisions.
-4. Add recovery/verify commands for malformed logs, missing refs, and stale
-   projections.
+4. Add recovery commands for malformed logs. `councli verify` already checks
+   missing refs, invalid sidecars, and stale projections.
 5. Add bounded context-packing policy for blackboard excerpts.
 6. Add SQLite WAL index only after artifact protocol stabilizes.
 7. Add retention, redaction, and garbage-collection commands.

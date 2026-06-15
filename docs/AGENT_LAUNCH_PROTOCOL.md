@@ -593,6 +593,6 @@ Do these before adding more collaboration features:
 6. Add process-group cancellation for headless calls.
 7. Normalize failure classes instead of relying on raw stderr strings.
 8. Improve UI labels: chat session, turn, optional round.
-9. Add `runs verify` to check events, sidecars, artifacts, and projections.
+9. Add `councli verify` to check events, sidecars, artifacts, and projections.
 10. Add bounded context packing so participants receive relevant blackboard
     excerpts rather than the whole history.

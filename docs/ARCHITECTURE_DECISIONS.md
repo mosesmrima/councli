@@ -213,7 +213,7 @@ Implications:
 Failure handling:
 
 - Missing artifact refs make the run degraded or invalid depending on intent.
-- `runs verify` should rebuild state and detect dangling refs, malformed
+- `councli verify` should rebuild state and detect dangling refs, malformed
   sidecars, and projection drift.
 
 ## Decision 4A: Council interaction is the product, not raw broadcast
@@ -579,7 +579,7 @@ Do not call the architecture production-grade until these gates pass:
 5. `/vote`, `/review`, executor selection, and apply reject invalid sidecars.
 6. Event writes and projections use `fcntl.flock`.
 7. Headless subprocesses run in process groups and cancel cleanly.
-8. `runs verify` validates events, refs, sidecars, and projections.
+8. `councli verify` validates events, refs, sidecars, and projections.
 9. `runs recover` can rebuild `state.json` and `blackboard.md`.
 10. Context packing passes bounded blackboard excerpts instead of full history.
 11. Retention/redaction exists for raw logs and artifacts.

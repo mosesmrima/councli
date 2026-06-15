@@ -991,6 +991,29 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(synthesis["kind"], "synthesis.response")
             self.assertEqual(synthesis["source_participants"], ["alpha", "beta"])
 
+            verified = subprocess.run(
+                [PYTHON, "-m", "councli", "verify", run_dir.name, "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertIn("Verify ok", verified.stdout)
+
+            (run_dir / "shared" / "deliberate.round1" / "alpha.response.json").unlink()
+            corrupted = subprocess.run(
+                [PYTHON, "-m", "councli", "verify", run_dir.name, "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(corrupted.returncode, 2, corrupted.stdout + corrupted.stderr)
+            report = json.loads(corrupted.stdout)
+            self.assertFalse(report["ok"])
+            self.assertTrue(any("sidecar missing" in error or "ref sidecar missing" in error for error in report["errors"]))
+
     def test_chat_degrades_repeated_auth_failures_for_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(

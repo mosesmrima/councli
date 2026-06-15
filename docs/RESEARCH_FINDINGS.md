@@ -458,7 +458,7 @@ Treat the system as not production-grade until these gates pass:
 5. Participant response sidecars are emitted and schema-validated.
 6. Machine decisions reject missing or invalid sidecars.
 7. Run event writes use cross-process `fcntl.flock`.
-8. `runs verify` and `runs recover` can rebuild projections and detect missing
+8. `councli verify` and `runs recover` can rebuild projections and detect missing
    refs.
 9. Ctrl-C records cancellation and terminates participant process groups.
 10. tmux sessions in the wrong cwd are live but not ready.
@@ -478,6 +478,6 @@ Treat the system as not production-grade until these gates pass:
 7. Add normalized failure classification.
 8. Add binary path/version trust drift checks.
 9. Add process-group cancellation for headless calls.
-10. Add `runs verify`, `runs recover`, and bounded context packing.
+10. Add `councli verify`, `runs recover`, and bounded context packing.
 11. Add retention/redaction and optional metrics export.
 12. Add SQLite WAL index only after the artifact protocol is stable.
