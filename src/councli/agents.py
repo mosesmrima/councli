@@ -215,6 +215,7 @@ class AgentRunner:
                 output="",
                 error=health.reason,
                 command=command,
+                failure_class=health_failure_class(health),
             )
 
         if dry_run:
@@ -320,6 +321,7 @@ class AgentRunner:
                 output="",
                 error=health.reason,
                 command=command,
+                failure_class=health_failure_class(health),
             )
 
         marker = f"<<<COUNCLI_DONE:{self.name}:{uuid.uuid4()}>>>"
@@ -389,6 +391,7 @@ class AgentRunner:
                 output=capture_tmux(session),
                 error=str(exc),
                 command=command,
+                failure_class="timeout",
             )
         except RuntimeError as exc:
             return AgentRunResult(
@@ -399,6 +402,7 @@ class AgentRunner:
                 output="",
                 error=str(exc),
                 command=command,
+                failure_class=classify_agent_failure(str(exc)),
             )
 
     @property
@@ -420,6 +424,14 @@ def looks_like_auth_error(text: str) -> bool:
 
 def classify_agent_failure(text: str) -> str:
     lowered = (text or "").lower()
+    if "binary not found" in lowered or "command not found" in lowered:
+        return "missing_binary"
+    if "tmux" in lowered and ("not found" in lowered or "unavailable" in lowered):
+        return "tmux_unavailable"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    if "cancel" in lowered or "terminated" in lowered:
+        return "canceled"
     if any(marker in lowered for marker in QUOTA_ERROR_MARKERS):
         return "quota_unavailable"
     if any(marker in lowered for marker in AUTH_ERROR_MARKERS):
@@ -427,6 +439,16 @@ def classify_agent_failure(text: str) -> str:
     if any(marker in lowered for marker in MODEL_ERROR_MARKERS):
         return "model_unconfigured"
     return "launch_failed"
+
+
+def health_failure_class(health: AgentHealth) -> str:
+    if not health.enabled:
+        return "disabled"
+    if health.version_status == "missing_binary":
+        return "missing_binary"
+    if health.readiness_status and health.readiness_status not in {"ok", "not_configured", "not_checked"}:
+        return health.readiness_status
+    return classify_agent_failure(health.reason)
 
 
 def terminate_process_group(proc: subprocess.Popen[str]) -> None:

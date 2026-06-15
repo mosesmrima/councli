@@ -79,7 +79,8 @@ The implementation is still MVP-grade in several places:
 - Shared turns still parse `COUNCLI_TRAILER` text as a fallback; response
   sidecars exist but need stricter validation before every machine decision.
 - The blackboard renderer still privileges legacy phases.
-- Failure classification is mostly stderr text heuristics.
+- Failure classification is normalized across run and readiness failures, but
+  still mostly derives from CLI text heuristics.
 - Command-level capability metadata exists for configured command paths;
   adapter-specific capability validation still needs to become richer.
 - Headless exec timeout and foreground Ctrl-C cleanup terminate active agent

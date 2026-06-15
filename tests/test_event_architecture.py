@@ -355,6 +355,26 @@ class EventArchitectureTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertFalse(process_is_active(child_pid), f"child process {child_pid} survived cancellation cleanup")
 
+    def test_unavailable_agent_run_preserves_readiness_failure_class(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runner = AgentRunner(
+                "not-ready",
+                AgentConfig(
+                    backend="exec",
+                    binary=PYTHON,
+                    command=[PYTHON, "-c", "print('should not run')", "{prompt}"],
+                    readiness_command=[PYTHON, "-c", "print('No model configured'); raise SystemExit(1)"],
+                ),
+            )
+
+            result = runner.run("ignored", cwd=root)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(result.skipped)
+            self.assertEqual(result.failure_class, "model_unconfigured")
+            self.assertIn("readiness probe failed", result.error)
+
     def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
