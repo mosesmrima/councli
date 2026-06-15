@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -1344,21 +1344,8 @@ def run_broadcast_round(
         f"Shared task brief: {brief.path}\n"
         "Return a concise answer with: SUMMARY, RISKS, RECOMMENDATION."
     )
-    if dry_run:
-        for name, runner in runnable.items():
-            results[name] = runner.run(task_prompt, cwd=root, dry_run=True)
-    else:
-        with ThreadPoolExecutor(max_workers=max(1, len(runnable))) as pool:
-            futures = {
-                pool.submit(runner.run, task_prompt, cwd=root, dry_run=False): name
-                for name, runner in runnable.items()
-            }
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    results[name] = future.result()
-                except Exception as exc:  # pragma: no cover - adapter guard
-                    results[name] = runner_unavailable_result(name, str(exc))
+    prompts = {name: task_prompt for name in runnable}
+    results.update(run_turn_round(root=root, runners=runnable, prompts=prompts, dry_run=dry_run, phase="broadcast"))
 
     for name in selected_names:
         result = results.get(name)
@@ -2146,7 +2133,13 @@ def synthesize_shared_turn(
         return fallback
 
     prompt = synthesis_prompt(task=task, intent=intent, names=ok_names, all_rounds=all_rounds, decision=decision)
-    result = synthesizer.run(prompt, cwd=root, dry_run=False)
+    result = run_turn_round(
+        root=root,
+        runners={synthesizer_name: synthesizer},
+        prompts={synthesizer_name: prompt},
+        dry_run=False,
+        phase="synthesis",
+    ).get(synthesizer_name, runner_unavailable_result(synthesizer_name, "synthesis did not return"))
     body, trailer = parse_turn_trailer(result.output if result.ok else "")
     if result.ok:
         result = replace(result, output=body)

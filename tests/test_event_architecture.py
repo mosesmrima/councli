@@ -862,6 +862,7 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("Task: make a visible plan", proc.stdout)
             self.assertIn("Asking:", proc.stdout)
             self.assertIn("chat.round1:alpha start", proc.stdout)
+            self.assertIn("synthesis:alpha start", proc.stdout)
             self.assertIn("Responses", proc.stdout)
             self.assertIn("Councli", proc.stdout)
 
@@ -988,6 +989,7 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             self.assertIn("would attach to alpha", proc.stdout)
             self.assertIn("Broadcast:", proc.stdout)
+            self.assertIn("broadcast:alpha start", proc.stdout)
             runs = sorted((root / ".councli" / "runs").iterdir())
             self.assertTrue(any(path.name.endswith("-broadcast") for path in runs))
             latest = [path for path in runs if path.name.endswith("-broadcast")][-1]
