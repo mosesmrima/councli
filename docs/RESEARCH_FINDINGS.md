@@ -472,7 +472,9 @@ Treat the system as not production-grade until these gates pass:
 10. tmux sessions in the wrong cwd are live but not ready.
 11. Retention/redaction controls exist for raw logs and artifacts.
 12. Integration tests cover each supported assistant command template with fake
-   binaries or safe real dry runs.
+   binaries or safe real dry runs. Built-in Codex, Claude, AGY, CodeWhale, and
+   Kimi shared-turn templates now run against fake binaries that validate argv
+   shape.
 
 ## Suggested implementation sequence
 

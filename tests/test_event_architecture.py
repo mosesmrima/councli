@@ -124,6 +124,76 @@ def fake_agent_script() -> str:
     )
 
 
+def fake_default_cli_script() -> str:
+    return (
+        f"#!{PYTHON}\n"
+        "import json, os, pathlib, re, sys\n"
+        "tool = pathlib.Path(sys.argv[0]).name\n"
+        "args = sys.argv[1:]\n"
+        "log_path = pathlib.Path(os.environ['COUNCLI_FAKE_AGENT_LOG'])\n"
+        "def log(kind, **extra):\n"
+        "    log_path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    with log_path.open('a', encoding='utf-8') as handle:\n"
+        "        handle.write(json.dumps({'tool': tool, 'kind': kind, 'args': args, **extra}, sort_keys=True) + '\\n')\n"
+        "def fail(message):\n"
+        "    log('error', message=message)\n"
+        "    print(message, file=sys.stderr)\n"
+        "    raise SystemExit(42)\n"
+        "if args == ['--version']:\n"
+        "    log('version')\n"
+        "    print(f'{tool} 9.9.9')\n"
+        "    raise SystemExit(0)\n"
+        "readiness = {\n"
+        "    'codex': ['doctor'],\n"
+        "    'claude': ['auth', 'status'],\n"
+        "    'agy': ['models'],\n"
+        "    'codewhale': ['doctor'],\n"
+        "    'kimi': ['doctor'],\n"
+        "}\n"
+        "if args == readiness.get(tool):\n"
+        "    log('readiness')\n"
+        "    print('ok')\n"
+        "    raise SystemExit(0)\n"
+        "prompt = None\n"
+        "if tool == 'codex':\n"
+        "    if not (args and args[0] == 'exec' and '--sandbox' in args and 'read-only' in args and '--skip-git-repo-check' in args):\n"
+        "        fail('bad codex argv')\n"
+        "    prompt = args[-1]\n"
+        "elif tool == 'claude':\n"
+        "    if '--permission-mode' not in args or 'plan' not in args or '-p' not in args:\n"
+        "        fail('bad claude argv')\n"
+        "    prompt = args[args.index('-p') + 1]\n"
+        "elif tool == 'agy':\n"
+        "    if '--sandbox' not in args or '--print' not in args:\n"
+        "        fail('bad agy argv')\n"
+        "    prompt = args[args.index('--print') + 1]\n"
+        "elif tool == 'codewhale':\n"
+        "    if len(args) != 2 or args[0] != 'exec':\n"
+        "        fail('bad codewhale argv')\n"
+        "    prompt = args[1]\n"
+        "elif tool == 'kimi':\n"
+        "    if len(args) != 2 or args[0] != '--prompt' or '--yolo' in args:\n"
+        "        fail('bad kimi argv')\n"
+        "    prompt = args[1]\n"
+        "else:\n"
+        "    fail('unknown tool')\n"
+        "packet_match = re.search(r'COUNCLI_PACKET_FILE=([^\\n]+)', prompt or '')\n"
+        "if packet_match:\n"
+        "    packet = pathlib.Path(packet_match.group(1).strip()).read_text(encoding='utf-8')\n"
+        "    if 'COUNCLI_SHARED_TURN=1' not in prompt or f'COUNCLI_PARTICIPANT={tool}' not in packet:\n"
+        "        fail('bad shared packet')\n"
+        "    prompt_kind = 'packet'\n"
+        "else:\n"
+        "    prompt_kind = 'synthesis'\n"
+        "log('prompt', prompt_kind=prompt_kind)\n"
+        "print(f'{tool} handled {prompt_kind}')\n"
+        "print('COUNCLI_TRAILER')\n"
+        "print('continue: false')\n"
+        "print('recommend: none')\n"
+        "print(f'summary: {tool} ok')\n"
+    )
+
+
 class EventArchitectureTests(unittest.TestCase):
     def set_state_home(self, path: Path) -> None:
         previous = os.environ.get("COUNCLI_STATE_HOME")
@@ -2405,6 +2475,71 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(raw["agents"])
             self.assertTrue(all(agent["enabled"] is False for agent in raw["agents"].values()))
             self.assertIn("Detected assistant CLIs", proc.stdout + proc.stderr)
+
+    def test_default_assistant_command_templates_run_with_fake_binaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.set_state_home(Path(tmp) / "state")
+            root = Path(tmp) / "repo"
+            bin_dir = Path(tmp) / "bin"
+            log_path = Path(tmp) / "fake-agent-log.jsonl"
+            root.mkdir()
+            bin_dir.mkdir()
+            script = fake_default_cli_script()
+            for name in ("codex", "claude", "agy", "codewhale", "kimi"):
+                path = bin_dir / name
+                path.write_text(script, encoding="utf-8")
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env["COUNCLI_STATE_HOME"] = str(Path(tmp) / "state")
+            env["COUNCLI_FAKE_AGENT_LOG"] = str(log_path)
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+
+            init_proc = subprocess.run(
+                [PYTHON, "-m", "councli", "init", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(init_proc.returncode, 0, init_proc.stdout + init_proc.stderr)
+
+            chat_proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root)],
+                cwd=REPO_ROOT,
+                env=env,
+                input="what can you do\n/quit\n",
+                text=True,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            self.assertEqual(chat_proc.returncode, 0, chat_proc.stdout + chat_proc.stderr)
+            stdout = chat_proc.stdout + chat_proc.stderr
+            self.assertIn("councli interactive", stdout)
+            self.assertIn("[ board ]", stdout)
+            for name in ("codex", "claude", "agy", "codewhale", "kimi"):
+                self.assertIn(f"chat.round1:{name} start", stdout)
+                self.assertIn(f"chat.round1:{name} done", stdout)
+            self.assertIn("synthesis:codex done", stdout)
+            self.assertIn("Councli", stdout)
+
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            prompt_records = [record for record in records if record["kind"] == "prompt"]
+            prompted_tools = {record["tool"] for record in prompt_records if record.get("prompt_kind") == "packet"}
+            self.assertEqual(prompted_tools, {"codex", "claude", "agy", "codewhale", "kimi"})
+            self.assertTrue(any(record["tool"] == "codex" and record.get("prompt_kind") == "synthesis" for record in prompt_records))
+            argv_by_tool = {record["tool"]: record["args"] for record in prompt_records if record.get("prompt_kind") == "packet"}
+            self.assertEqual(argv_by_tool["codex"][:3], ["exec", "--sandbox", "read-only"])
+            self.assertEqual(argv_by_tool["claude"][:3], ["--permission-mode", "plan", "-p"])
+            self.assertEqual(argv_by_tool["agy"][:2], ["--sandbox", "--print"])
+            self.assertEqual(argv_by_tool["codewhale"][0], "exec")
+            self.assertEqual(argv_by_tool["kimi"][0], "--prompt")
+            self.assertNotIn("--yolo", argv_by_tool["kimi"])
 
     def test_native_config_changes_require_retrust_and_validate_detach_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
