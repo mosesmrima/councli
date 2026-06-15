@@ -120,8 +120,6 @@ councli chat
 councli init --disable-missing
 councli trust
 councli sessions attach codex
-councli sessions import codex
-councli sessions resume codex
 councli broadcast "Compare the API design"
 councli brief "Context to share with assistants"
 councli status
@@ -144,6 +142,12 @@ Each agent has:
 - `enabled`: whether to consider it.
 - `backend`: `exec` or `tmux`.
 - `binary`: executable name to find on `PATH`.
+- `display_name`: optional human-readable adapter name.
+- `capabilities`: optional intent list such as `chat`, `deliberate`, `vote`,
+  `broadcast`, and `assistant`. Empty means infer support from configured
+  commands.
+- `version_command`: optional lightweight version probe command.
+- `probe_timeout_seconds`: timeout for version/probe commands.
 - `command`: argv template. For `exec`, `{prompt}` is replaced with the generated prompt.
 - `broadcast_command`: optional argv template for read-only broadcast/planning.
 - `broadcast_enabled`: whether the agent can participate in broadcast.
@@ -225,14 +229,6 @@ Useful commands:
 councli sessions list
 councli sessions start agy
 councli sessions attach agy
-councli sessions import agy
-councli sessions import agy --session-id <native-id>
-councli sessions import agy --path <native-session-file>
-councli sessions resume agy
-councli sessions resume agy --replace-existing
-councli sessions send agy "Say hello"
-councli sessions ask agy "Say hello and wait for completion"
-councli sessions relay agy codex "Critique this plan"
 councli sessions capture agy
 councli sessions stop agy --dry-run
 councli sessions prune --dry-run
@@ -244,17 +240,11 @@ Run inspection commands:
 councli status
 councli show latest
 councli show <run-id-prefix> --blackboard
-councli apply <run-id-prefix> --dry-run
-councli apply <run-id-prefix>
 ```
 
 `status` lists recent run ids with task, participants, decision, review, and
-implementation status. `show` reopens a run's durable state and prints the
-paths to its blackboard, machine state, event log, worktree, and diff when they
-exist. `apply` checks and applies an implemented run's patch to the current
-worktree. It requires a clean worktree, an accepted peer review by default, and
-the same base commit that the executor worktree started from. Use `--dry-run`
-first to check whether the patch applies cleanly.
+implementation status when present. `show` reopens a run's durable state and
+prints the paths to its blackboard, machine state, event log, and artifacts.
 
 Interactive councli shell:
 
@@ -330,23 +320,16 @@ rooms, archiving captured pane text first by default under
 `.councli/session-archives/`. Use `--dry-run` before cleanup when you want to
 inspect the target list.
 
-`sessions resume` refuses to run a native resume command over an already-live
-tmux session. Use `--replace-existing` when you intentionally want councli to
-archive/stop the live session first, then launch the configured `resume_command`.
-
-The `council` command runs the blackboard protocol against available
-participants:
+The `council` command is a compatibility entrypoint for an explicit shared
+deliberation turn against available participants:
 
 ```bash
 councli council -p codex -p agy "Decide the smallest safe plan"
 ```
 
-Each phase gives every participant a dedicated file under
-`.councli/runs/<run>/incoming/<phase>/<participant>.*`. For council phases,
-`councli` treats that file as the required completion signal. It retries a
-missing output file once, then records that participant as failed or abstained
-for the phase. Terminal markers and stdout remain useful for diagnostics, but
-they are not accepted as council artifacts.
+It writes packet files, participant response sidecars, synthesis artifacts, and
+a blackboard under `.councli/runs/<run>/`. The older fixed phase engine remains
+hidden for development while the shared-turn protocol is hardened.
 
 CodeWhale/DeepSeek is supported with the non-interactive command:
 
@@ -370,18 +353,16 @@ Kimi Code is supported with:
 
 ## Current limits
 
-This is v0. It implements consensus reasoning, worktree-backed executor runs,
-peer review, revision attempts, executor replacement, and explicit apply of an
-accepted run patch. It does not auto-apply or auto-merge without the user
-running `councli apply`, and it does not emulate native tool features. Next
-steps are:
+This is v0. It now focuses the public surface on shared conversation,
+deliberation, explicit voting, native attach, durable artifacts, and adapter
+readiness. Hidden experimental worktree execution/review commands still exist
+for development, but they are not the MVP path. Next steps are:
 
-1. Add adapter-specific health probes for auth/quota checks.
-2. Add run-local locks and JSON response sidecars for stronger machine state.
-3. Add explicit native-session cold resume once adapter-specific session ids are
-   captured reliably.
-4. Add capability-aware routing, retention/redaction, and process-group cleanup.
-5. Add a richer interactive TUI once the protocol proves useful.
+1. Add adapter-specific auth/quota probes where each CLI exposes safe commands.
+2. Add retention/redaction controls for local artifacts.
+3. Add a richer interactive TUI once the protocol proves useful.
+4. Decide whether to delete or separately package the hidden execution/review
+   prototype.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and
 [docs/ADAPTER_CONTRACT.md](docs/ADAPTER_CONTRACT.md) for the generic adapter

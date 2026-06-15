@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -882,6 +883,32 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("No council task supplied", proc.stdout)
             self.assertIn("councli interactive", proc.stdout)
 
+    def test_public_help_hides_deferred_workflow_and_session_helpers(self) -> None:
+        main_help = subprocess.run(
+            [PYTHON, "-m", "councli", "--help"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        sessions_help = subprocess.run(
+            [PYTHON, "-m", "councli", "sessions", "--help"],
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(main_help.returncode, 0, main_help.stdout + main_help.stderr)
+        self.assertEqual(sessions_help.returncode, 0, sessions_help.stdout + sessions_help.stderr)
+        self.assertIn("council", main_help.stdout)
+        self.assertIsNone(re.search(r"│\s+reason\s+", main_help.stdout))
+        self.assertIsNone(re.search(r"│\s+apply\s+", main_help.stdout))
+        self.assertIsNone(re.search(r"│\s+run\s+", main_help.stdout))
+        self.assertIn("attach", sessions_help.stdout)
+        for hidden in ("import", "resume", "send", "ask", "relay"):
+            self.assertNotIn(hidden, sessions_help.stdout)
+
     def test_deliberate_slash_command_uses_shared_turn_rounds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(tmp)
@@ -1210,6 +1237,35 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(alpha["intents"]["chat"]["status"], "ready")
             self.assertTrue(alpha["intents"]["deliberate"]["ready"])
             self.assertTrue(alpha["intents"]["vote"]["ready"])
+
+    def test_doctor_json_reports_version_and_capability_gated_intents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["display_name"] = "Alpha Test Agent"
+            raw["agents"]["alpha"]["capabilities"] = ["chat"]
+            raw["agents"]["alpha"]["version_command"] = [PYTHON, "--version"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            trust_project_config(root, reason="test", repair_identity=True)
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertEqual(alpha["display_name"], "Alpha Test Agent")
+            self.assertEqual(alpha["version_status"], "ok")
+            self.assertIn("Python", alpha["version"])
+            self.assertTrue(alpha["intents"]["chat"]["ready"])
+            self.assertFalse(alpha["intents"]["vote"]["ready"])
+            self.assertEqual(alpha["intents"]["vote"]["status"], "unsupported_intent")
 
     def test_doctor_json_is_pure_json_on_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

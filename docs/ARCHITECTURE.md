@@ -28,10 +28,9 @@ Stronger coordination is explicit:
 - `/deliberate <prompt>` asks participants to think independently, then gives
   them a peer-aware round before synthesis.
 - `/vote <prompt>` asks for an explicit decision artifact.
-- `/legacy-council <prompt>`, `reason`, and `run` use the older fixed
-  orient/propose/critique/revise/vote workflow for implementation planning.
-- `run <task>` may choose an executor, run it in an isolated git worktree, and
-  collect peer review before the user applies the patch.
+- Hidden experimental execution/review commands may choose executors, use
+  isolated git worktrees, and collect peer review, but they are not the MVP user
+  path.
 
 The design rule is: `councli` provides the room, memory, routing, and safety
 rails; the assistants provide the intelligence. Voting and executor selection
@@ -61,7 +60,7 @@ locks, crash recovery, retention, and the future SQLite WAL index.
 
 ```text
 CLI layer
-  init, doctor, reason, run, apply, status, show, chat, broadcast
+  init, setup, trust, doctor, status, show, chat, broadcast, sessions
 
 Protocol layer
   turn envelopes, prompts, participant responses, trailers, blackboard rendering,
@@ -74,7 +73,8 @@ Native host layer
   dedicated tmux server, project-scoped sessions, raw pane capture, native attach/detach
 
 Workspace layer
-  git repository checks, worktree creation, diff capture
+  git repository checks; hidden/future execution may add worktree creation and
+  diff capture
 
 Artifact layer
   .councli/config.yaml
@@ -231,7 +231,7 @@ input:
 - `type`: literal `tmux send-keys -l` chunks for TUIs that keep bracketed paste
   in a draft composer.
 
-For plain `sessions ask`, `councli` waits until the pane contains a unique
+Hidden terminal automation prototypes can wait until the pane contains a unique
 per-turn done marker:
 
 ```text
@@ -245,13 +245,13 @@ failed or abstained. Terminal markers and stdout remain useful for diagnostics,
 but screen capture is not accepted as the blackboard source of truth because
 TUIs can wrap, split, repaint, or retain old text.
 
-Manual communication commands:
+Public native-session commands:
 
-- `sessions send`: fire-and-forget prompt paste.
-- `sessions ask`: prompt paste, wait for marker, print latest exchange.
-- `sessions relay`: ask one agent, send its captured response to another agent for critique/revision.
+- `sessions start`: launch an assistant in a project-scoped tmux session.
 - `sessions attach`: attach to an assistant's native terminal. Press `Ctrl-]`
   to return.
+- `sessions capture`, `sessions stop`, and `sessions prune`: inspect and clean
+  native-session artifacts.
 
 ## Project ledger and task briefs
 
@@ -308,22 +308,11 @@ metadata so partial failures are visible.
 
 ## Native import and resume
 
-Native resume is adapter-specific. `councli sessions import <agent>` records an
-explicit `--session-id` or an explicit `--path`. If no id/path is provided, it
-lists likely session files from known assistant stores such as
-`~/.claude/projects`, `~/.codex/sessions`, or `~/.kimi-code/sessions`, including
-confidence and evidence. It does not silently choose an ambiguous session.
-`--auto` only imports a single high-confidence top match.
-
-`councli sessions resume <agent>` uses the adapter's `resume_command` template
-with the imported native session id, then starts the assistant under the same
-project-scoped tmux session. This is intentionally based on native session
-stores rather than terminal replay.
-
-Resume refuses to overwrite an already-live tmux session by default, because a
-live session would otherwise cause the resume command to be skipped. Use
-`--replace-existing` to archive/stop the live session first, then run the native
-resume command.
+Cold native resume is adapter-specific and remains hidden while the MVP focuses
+on hot project-scoped tmux sessions. The target design is still to record an
+explicit native session id or path, then launch the adapter's native
+`resume_command`; `councli` should never silently choose an ambiguous latest
+session.
 
 ## Shared-turn artifact protocol
 
@@ -382,8 +371,7 @@ than attempting to drive each participant's private native conversation history.
 conversation turn.
 Local slash commands (`/status`, `/show`, `/doctor`, `/sessions`,
 `/assistant <name> [instance]`, `/broadcast <prompt>`, `/brief [task]`,
-`/deliberate <prompt>`, `/vote <prompt>`, `/council <prompt>`,
-`/legacy-council <prompt>`, `/quit`) operate on councli artifacts and configured
+`/deliberate <prompt>`, `/vote <prompt>`, `/council <prompt>`, `/quit`) operate on councli artifacts and configured
 sessions only. Unknown slash commands are rejected explicitly. A line prefixed
 with `//` is treated as a literal task beginning with `/`.
 
@@ -392,9 +380,9 @@ While attached, the assistant owns the terminal. Native slash commands,
 autocomplete, permission prompts, MCP interactions, and hotkeys stay native.
 `councli` does not parse `/back` or any other typed command in this mode.
 
-## Worktree execution
+## Hidden worktree execution prototype
 
-`councli run` creates a git worktree outside the repository:
+The hidden execution prototype creates a git worktree outside the repository:
 
 ```text
 ../.councli-worktrees/<repo-name>/<run-id>-<executor>
@@ -406,8 +394,8 @@ automatically.
 The review diff is captured against the worktree's base commit so committed
 executor changes are visible to reviewers, not only unstaged changes.
 
-`councli apply <run>` is the explicit handoff from accepted implementation to
-the main worktree. It requires:
+The hidden apply prototype is the explicit handoff from accepted implementation
+to the main worktree. It requires:
 
 - the run completed with `implemented: true`;
 - peer review verdict `accepted` unless `--allow-unreviewed` is passed for an

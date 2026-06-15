@@ -279,7 +279,6 @@ The native plane is the assistant's own terminal session:
 ```text
 councli sessions start codex
 councli sessions attach codex
-councli sessions resume claude
 ```
 
 It is for manual work and native feature access. `councli` records attach/detach
@@ -287,7 +286,8 @@ events and raw terminal logs, but it should not claim those logs are exact
 semantic context.
 
 If semantic import is needed, prefer each tool's native session export or
-conversation store over screen scraping.
+conversation store over screen scraping. Cold native resume is adapter-specific
+and remains outside the MVP public surface.
 
 ### 3. Operator plane
 

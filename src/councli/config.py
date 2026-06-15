@@ -21,6 +21,10 @@ EXECUTABLE_AGENT_FIELDS = (
     "enabled",
     "backend",
     "binary",
+    "display_name",
+    "capabilities",
+    "version_command",
+    "probe_timeout_seconds",
     "command",
     "broadcast_command",
     "broadcast_enabled",
@@ -67,6 +71,10 @@ class AgentConfig(BaseModel):
     enabled: bool = True
     backend: Literal["exec", "tmux"] = "exec"
     binary: str
+    display_name: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    version_command: list[str] | None = None
+    probe_timeout_seconds: int = Field(default=3, ge=1, le=30)
     command: list[str]
     broadcast_command: list[str] | None = None
     broadcast_enabled: bool = True
@@ -90,6 +98,13 @@ class AgentConfig(BaseModel):
         for part in value:
             if "{prompt}" in part and part != "{prompt}":
                 raise ValueError("{prompt} must be a standalone argv token")
+        return value
+
+    @field_validator("version_command")
+    @classmethod
+    def validate_version_command(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any("{prompt}" in part for part in value):
+            raise ValueError("version_command must not contain {prompt}")
         return value
 
 
@@ -131,6 +146,9 @@ DEFAULT_CONFIG = CouncliConfig(
         "codex": AgentConfig(
             backend="exec",
             binary="codex",
+            display_name="Codex CLI",
+            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            version_command=["codex", "--version"],
             command=[
                 "codex",
                 "exec",
@@ -154,6 +172,9 @@ DEFAULT_CONFIG = CouncliConfig(
         "claude": AgentConfig(
             backend="exec",
             binary="claude",
+            display_name="Claude Code",
+            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            version_command=["claude", "--version"],
             command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
             broadcast_command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
             resume_command=["claude", "--resume", "{session_id}"],
@@ -163,6 +184,9 @@ DEFAULT_CONFIG = CouncliConfig(
         "agy": AgentConfig(
             backend="exec",
             binary="agy",
+            display_name="AGY",
+            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            version_command=["agy", "--version"],
             command=["agy", "--sandbox", "--print", "{prompt}"],
             broadcast_command=["agy", "--sandbox", "--print", "{prompt}"],
             resume_command=["agy", "--conversation", "{session_id}"],
@@ -172,6 +196,9 @@ DEFAULT_CONFIG = CouncliConfig(
         "codewhale": AgentConfig(
             backend="exec",
             binary="codewhale",
+            display_name="CodeWhale",
+            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            version_command=["codewhale", "--version"],
             command=["codewhale", "exec", "{prompt}"],
             broadcast_command=["codewhale", "exec", "{prompt}"],
             resume_command=["codewhale", "--resume", "{session_id}"],
@@ -181,6 +208,9 @@ DEFAULT_CONFIG = CouncliConfig(
         "kimi": AgentConfig(
             backend="exec",
             binary="kimi",
+            display_name="Kimi",
+            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            version_command=["kimi", "--version"],
             command=["kimi", "--prompt", "{prompt}"],
             broadcast_command=["kimi", "--prompt", "{prompt}"],
             resume_command=["kimi", "--session", "{session_id}"],

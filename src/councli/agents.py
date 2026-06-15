@@ -53,6 +53,8 @@ class AgentHealth:
     available: bool
     reason: str
     backend: str = "exec"
+    version: str | None = None
+    version_status: str = "not_checked"
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,7 @@ class AgentRunner:
                 available=False,
                 reason="disabled in config",
                 backend=self.config.backend,
+                version_status="not_checked",
             )
         if self.config.backend == "tmux" and not shutil.which("tmux"):
             return AgentHealth(
@@ -93,6 +96,7 @@ class AgentRunner:
                 available=False,
                 reason="tmux not found on PATH",
                 backend=self.config.backend,
+                version_status="not_checked",
             )
         path = shutil.which(self.config.binary)
         if not path:
@@ -104,7 +108,9 @@ class AgentRunner:
                 available=False,
                 reason="binary not found on PATH",
                 backend=self.config.backend,
+                version_status="missing_binary",
             )
+        version, version_status = self.probe_version(path)
         return AgentHealth(
             name=self.name,
             enabled=True,
@@ -113,7 +119,32 @@ class AgentRunner:
             available=True,
             reason="available",
             backend=self.config.backend,
+            version=version,
+            version_status=version_status,
         )
+
+    def probe_version(self, binary_path: str) -> tuple[str | None, str]:
+        command = self.config.version_command
+        if not command:
+            return None, "not_configured"
+        resolved_command = [binary_path if index == 0 and part == self.config.binary else part for index, part in enumerate(command)]
+        try:
+            proc = subprocess.run(
+                resolved_command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=self.config.probe_timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "timeout"
+        except OSError:
+            return None, "launch_failed"
+        output = (proc.stdout or proc.stderr or "").strip()
+        if proc.returncode != 0:
+            return compact_one_line(output), "failed"
+        return compact_one_line(output), "ok"
 
     def render_command(self, prompt: str) -> list[str]:
         return [part.replace("{prompt}", prompt) for part in self.config.command]
@@ -652,6 +683,15 @@ def render_tmux_prompt(
 
 def compact_terminal_prompt(text: str) -> str:
     return " ".join(text.split())
+
+
+def compact_one_line(text: str, *, limit: int = 200) -> str | None:
+    value = " ".join((text or "").split())
+    if not value:
+        return None
+    if len(value) > limit:
+        return value[:limit].rstrip() + " ..."
+    return value
 
 
 def shell_join(command: list[str]) -> str:

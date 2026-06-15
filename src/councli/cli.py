@@ -215,6 +215,7 @@ def doctor(
     table.add_column("Enabled")
     table.add_column("Binary")
     table.add_column("Backend")
+    table.add_column("Version")
     table.add_column("Path")
     table.add_column("Status")
 
@@ -223,9 +224,13 @@ def doctor(
         intents = doctor_intent_readiness(runner, health)
         record = {
             "agent": name,
+            "display_name": runner.config.display_name or name,
             "enabled": health.enabled,
             "binary": health.binary,
             "backend": health.backend,
+            "capabilities": runner.config.capabilities,
+            "version": health.version,
+            "version_status": health.version_status,
             "path": health.path,
             "available": health.available,
             "reason": health.reason,
@@ -238,6 +243,7 @@ def doctor(
             str(health.enabled),
             health.binary,
             health.backend,
+            health.version or f"({health.version_status})",
             health.path or "-",
             f"[{style}]{health.reason}[/]",
         )
@@ -255,12 +261,16 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
     broadcast_supported = bool(runner.config.broadcast_enabled and shared_supported)
     assistant_supported = bool(runner.config.start_command or runner.config.backend == "tmux")
     return {
-        "chat": intent_readiness(health, supported=shared_supported),
-        "deliberate": intent_readiness(health, supported=shared_supported),
-        "vote": intent_readiness(health, supported=shared_supported),
-        "broadcast": intent_readiness(health, supported=broadcast_supported),
-        "assistant": intent_readiness(health, supported=assistant_supported),
+        "chat": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "chat")),
+        "deliberate": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "deliberate")),
+        "vote": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "vote")),
+        "broadcast": intent_readiness(health, supported=broadcast_supported and adapter_supports_intent(runner, "broadcast")),
+        "assistant": intent_readiness(health, supported=assistant_supported and adapter_supports_intent(runner, "assistant")),
     }
+
+
+def adapter_supports_intent(runner: AgentRunner, intent: str) -> bool:
+    return not runner.config.capabilities or intent in runner.config.capabilities
 
 
 def intent_readiness(health: Any, *, supported: bool) -> dict[str, Any]:
@@ -563,7 +573,7 @@ def sessions_attach(
         raise typer.Exit(code=2) from exc
 
 
-@sessions_app.command("import")
+@sessions_app.command("import", hidden=True)
 def sessions_import(
     agent: Annotated[str, typer.Argument(help="Agent name.")],
     root: RootOpt = Path.cwd(),
@@ -666,7 +676,7 @@ def validate_native_session_id(session_id: str) -> str:
     return session_id
 
 
-@sessions_app.command("resume")
+@sessions_app.command("resume", hidden=True)
 def sessions_resume(
     agent: Annotated[str, typer.Argument(help="Agent name.")],
     root: RootOpt = Path.cwd(),
@@ -785,7 +795,7 @@ def attach_agent_session(*, root: Path, name: str, runner: AgentRunner, instance
         raise RuntimeError(f"tmux attach exited with code {rc}")
 
 
-@sessions_app.command("send")
+@sessions_app.command("send", hidden=True)
 def sessions_send(
     agent: Annotated[str, typer.Argument(help="Agent name.")],
     message: Annotated[str, typer.Argument(help="Message to paste into the agent session.")],
@@ -842,7 +852,7 @@ def sessions_send(
     console.print(f"[green]Sent to {registry_key}[/] ({session_name})")
 
 
-@sessions_app.command("ask")
+@sessions_app.command("ask", hidden=True)
 def sessions_ask(
     agent: Annotated[str, typer.Argument(help="Agent name.")],
     message: Annotated[str, typer.Argument(help="Message to send and wait on.")],
@@ -876,7 +886,7 @@ def sessions_ask(
     raise typer.Exit(code=2)
 
 
-@sessions_app.command("relay")
+@sessions_app.command("relay", hidden=True)
 def sessions_relay(
     source: Annotated[str, typer.Argument(help="Agent that answers first.")],
     target: Annotated[str, typer.Argument(help="Agent that receives the source response.")],
@@ -1332,6 +1342,9 @@ def run_broadcast_round(
         )
         if not health.available:
             continue
+        if not adapter_supports_intent(runner, "broadcast"):
+            results[name] = runner_unavailable_result(name, "unsupported intent: broadcast")
+            continue
         try:
             runnable[name] = broadcast_runner(runner)
         except ValueError as exc:
@@ -1570,6 +1583,9 @@ def run_shared_turn(
         )
         if name in session_degraded:
             degraded[name] = runner_unavailable_result(name, f"degraded for this session: {session_degraded[name]}")
+            continue
+        if not adapter_supports_intent(runner, intent.name):
+            degraded[name] = runner_unavailable_result(name, f"unsupported intent: {intent.name}")
             continue
         if not health.available:
             degraded[name] = runner_unavailable_result(name, health.reason)
@@ -2916,6 +2932,9 @@ def handle_chat_command(
         runner = runners.get(name)
         if runner is None:
             console.print(f"[red]Unknown agent:[/] {name}")
+            return False
+        if not adapter_supports_intent(runner, "assistant"):
+            console.print(f"[red]{name} does not support native assistant attach[/]")
             return False
         if dry_run:
             config = load_config(root)
