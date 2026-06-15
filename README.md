@@ -148,6 +148,15 @@ Each agent has:
 - `capabilities`: optional intent list such as `chat`, `deliberate`, `vote`,
   `broadcast`, and `assistant`. Empty means infer support from configured
   commands.
+- `command_capabilities`: what the normal prompt command may do, using values
+  such as `planning_only`, `reads_workspace`, `writes_workspace`, `runs_tools`,
+  `network_access`, and `full_permission`.
+- `broadcast_capabilities`: capabilities for `broadcast_command`. If omitted,
+  legacy configs infer read-only behavior from `broadcast_read_only`.
+- `start_capabilities` / `resume_capabilities`: capabilities for native tmux
+  start/resume commands.
+- `broadcast_policy`: `safe_only` by default. Set `allow_full_permission` only
+  when an unsafe broadcast fallback is intentional.
 - `version_command`: optional lightweight version probe command.
 - `readiness_command`: optional bounded, non-mutating probe for auth/model/quota
   readiness. Nonzero output is classified into statuses such as
@@ -157,7 +166,7 @@ Each agent has:
 - `command`: argv template. For `exec`, `{prompt}` is replaced with the generated prompt.
 - `broadcast_command`: optional argv template for read-only broadcast/planning.
 - `broadcast_enabled`: whether the agent can participate in broadcast.
-- `broadcast_read_only`: whether the configured broadcast path is intended to be read-only.
+- `broadcast_read_only`: legacy advisory field retained for old configs.
 - `broadcast_timeout_seconds`: optional broadcast-specific timeout.
 - `resume_command`: optional argv template where `{session_id}` is replaced by an imported native session id.
 - `session_name`: tmux session name for `tmux` backend.

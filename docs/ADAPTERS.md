@@ -66,14 +66,13 @@ timeout_seconds: 900
 per-turn marker to avoid false completion from old scrollback.
 
 `broadcast_command` should prefer each assistant's safest read-only/planning
-mode. Current shared-turn and broadcast code may fall back to the normal
-prompt-capable `command` when `broadcast_command` is missing, because an
-available full-permission assistant is more useful than a hard skip during the
-MVP. The run must record whether a broadcast-specific command was explicit and
-whether read-only behavior was actually enforced.
+mode. Current `/broadcast` routing falls back to the normal prompt-capable
+`command` only when command-level capabilities satisfy broadcast policy, or when
+`broadcast_policy: allow_full_permission` makes the escalation explicit. The
+run records whether a broadcast-specific command was explicit and which
+capabilities were used.
 
-This is a deliberate tradeoff, not a strong security boundary. For production,
-replace `broadcast_read_only` with adapter capabilities such as:
+The capability vocabulary is:
 
 - `planning_only`
 - `reads_workspace`

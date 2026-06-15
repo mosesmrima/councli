@@ -515,7 +515,8 @@ Why:
 
 Implications:
 
-- Command capabilities must replace boolean `broadcast_read_only`.
+- Command capabilities drive broadcast policy; `broadcast_read_only` is legacy
+  compatibility metadata only.
 - Project config cannot silently escalate permissions.
 - Trust pins should include command-bearing fields and resolved binary path.
 

@@ -11,7 +11,8 @@ The current implementation has useful primitives, but it is still too coarse:
   built-in adapters include safe default probes, but richer machine-readable
   readiness remains adapter-specific future work;
 - intent readiness is capability-aware for the public MVP intents;
-- `broadcast_read_only` is a boolean, not a permission model;
+- command-level capability metadata exists for prompt, broadcast, and native
+  commands; richer adapter-specific validation is still needed;
 - authentication, quota, model readiness, and provider selection are normalized
   from probe or run output text unless a CLI exposes a richer machine report;
 - shared-turn trailers are text, not validated machine records.
@@ -167,8 +168,8 @@ Current YAML can remain compatible by treating old fields as a shorthand:
 - `broadcast_command` becomes `commands.planning`;
 - `start_command` becomes `commands.native_start`;
 - `resume_command` becomes `commands.native_resume`;
-- `broadcast_read_only` becomes advisory metadata until explicit capabilities
-  exist.
+- `broadcast_read_only` is retained only as legacy advisory metadata when old
+  configs omit `broadcast_capabilities`;
 
 ## Intent routing
 
@@ -428,7 +429,8 @@ It also makes cleanup and retry safer:
    `COUNCLI_TRAILER` as fallback.
 4. Add JSON Schema files for adapter manifests and response sidecars.
 5. Replace `broadcast_read_only` with command-level capabilities and an
-   explicit fallback policy.
+   explicit fallback policy. Done for `/broadcast`; continue extending routing
+   by intent and policy.
 6. Keep improving adapter-specific probes for auth, model, quota, and native
    session readiness where each CLI exposes richer safe diagnostics. The
    generic `readiness_command` hook and built-in defaults are in place.

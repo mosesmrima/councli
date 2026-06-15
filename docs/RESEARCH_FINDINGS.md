@@ -80,7 +80,8 @@ The implementation is still MVP-grade in several places:
   sidecars exist but need stricter validation before every machine decision.
 - The blackboard renderer still privileges legacy phases.
 - Failure classification is mostly stderr text heuristics.
-- `broadcast_read_only` is a boolean rather than a command capability model.
+- Command-level capability metadata exists for configured command paths;
+  adapter-specific capability validation still needs to become richer.
 - Headless exec timeout and foreground Ctrl-C cleanup terminate active agent
   process groups; cancellation state still needs to be made consistent across
   all commands.
@@ -453,7 +454,7 @@ Treat the system as not production-grade until these gates pass:
 
 1. `doctor --json` reports readiness per intent.
 2. Adapter manifests or config fields declare command capabilities.
-3. Full-permission commands are rejected for read-only intents unless explicit
+3. Full-permission broadcast commands are rejected unless explicit
    fallback is configured.
 4. Binary path and executable hash drift after trust are detected; stable
    version reporting remains a hardening step.

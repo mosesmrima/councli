@@ -95,8 +95,9 @@ trusted agent fields in user-local councli state (`$COUNCLI_STATE_HOME`,
 `.councli/project.json`.
 
 On load, `councli` checks the pinned hash for each agent's trusted control fields:
-`enabled`, `backend`, `binary`, `command`, `start_command`,
-`broadcast_command`, `broadcast_enabled`, `broadcast_read_only`,
+`enabled`, `backend`, `binary`, `command`, command capabilities,
+`start_command`, `broadcast_command`, `broadcast_enabled`, `broadcast_policy`,
+`broadcast_read_only`,
 `resume_command`, session naming, prompt style, input method, submit keys, and
 timeouts. If those fields change, the user must review the config and run
 `councli trust`. If `.councli/` was intentionally moved with a project, the user

@@ -557,7 +557,6 @@ class EventArchitectureTests(unittest.TestCase):
                 backend="exec",
                 binary=PYTHON,
                 command=[PYTHON, "-c", "print('could edit')", "{prompt}"],
-                broadcast_read_only=True,
             ),
         )
 
@@ -569,10 +568,17 @@ class EventArchitectureTests(unittest.TestCase):
                 backend="exec",
                 binary=PYTHON,
                 command=[PYTHON, "-c", "print('allowed fallback')", "{prompt}"],
-                broadcast_read_only=False,
+                command_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "full_permission"],
             ),
         )
-        self.assertEqual(broadcast_runner(unsafe_fallback).config.command, unsafe_fallback.config.command)
+        with self.assertRaisesRegex(ValueError, "policy_denied"):
+            broadcast_runner(unsafe_fallback)
+
+        explicit_policy = AgentRunner(
+            "explicit",
+            unsafe_fallback.config.model_copy(update={"broadcast_policy": "allow_full_permission"}),
+        )
+        self.assertEqual(broadcast_runner(explicit_policy).config.command, explicit_policy.config.command)
 
     def test_review_parser_and_decision_helpers(self) -> None:
         def valid_review(verdict: str, *, confidence: float = 0.9, concerns: list[str] | None = None) -> dict:
@@ -1836,6 +1842,37 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(alpha["intents"]["chat"]["ready"])
             self.assertFalse(alpha["intents"]["vote"]["ready"])
             self.assertEqual(alpha["intents"]["vote"]["status"], "unsupported_intent")
+            self.assertIn("broadcast", alpha["command_capabilities"])
+
+    def test_doctor_json_reports_broadcast_policy_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"].pop("broadcast_command", None)
+            raw["agents"]["alpha"]["command_capabilities"] = [
+                "reads_workspace",
+                "writes_workspace",
+                "runs_tools",
+                "full_permission",
+            ]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            trust_project_config(root, reason="test", repair_identity=True)
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertFalse(alpha["intents"]["broadcast"]["ready"])
+            self.assertEqual(alpha["intents"]["broadcast"]["status"], "policy_denied")
+            self.assertIn("full_permission", alpha["command_capabilities"]["broadcast"])
 
     def test_doctor_json_reports_configured_readiness_probe_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

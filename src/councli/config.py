@@ -23,6 +23,11 @@ EXECUTABLE_AGENT_FIELDS = (
     "binary",
     "display_name",
     "capabilities",
+    "command_capabilities",
+    "broadcast_capabilities",
+    "start_capabilities",
+    "resume_capabilities",
+    "broadcast_policy",
     "version_command",
     "readiness_command",
     "probe_timeout_seconds",
@@ -59,6 +64,14 @@ TMUX_KEY_PATTERN = re.compile(
     r"|Up|Down|Left|Right|Home|End|PageUp|PageDown"
     r")$"
 )
+COMMAND_CAPABILITIES = (
+    "planning_only",
+    "reads_workspace",
+    "writes_workspace",
+    "runs_tools",
+    "network_access",
+    "full_permission",
+)
 
 
 class ConfigTrustError(ValueError):
@@ -75,6 +88,15 @@ class AgentConfig(BaseModel):
     binary: str
     display_name: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    command_capabilities: list[str] = Field(default_factory=lambda: ["reads_workspace", "runs_tools"])
+    broadcast_capabilities: list[str] = Field(default_factory=list)
+    start_capabilities: list[str] = Field(
+        default_factory=lambda: ["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"]
+    )
+    resume_capabilities: list[str] = Field(
+        default_factory=lambda: ["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"]
+    )
+    broadcast_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
     version_command: list[str] | None = None
     readiness_command: list[str] | None = None
     probe_timeout_seconds: int = Field(default=3, ge=1, le=30)
@@ -109,6 +131,19 @@ class AgentConfig(BaseModel):
     def validate_probe_command(cls, value: list[str] | None) -> list[str] | None:
         if value is not None and any("{prompt}" in part for part in value):
             raise ValueError("probe commands must not contain {prompt}")
+        return value
+
+    @field_validator(
+        "command_capabilities",
+        "broadcast_capabilities",
+        "start_capabilities",
+        "resume_capabilities",
+    )
+    @classmethod
+    def validate_command_capabilities(cls, value: list[str]) -> list[str]:
+        invalid = sorted(set(value) - set(COMMAND_CAPABILITIES))
+        if invalid:
+            raise ValueError(f"unknown command capability/capabilities: {', '.join(invalid)}")
         return value
 
 
@@ -206,6 +241,10 @@ DEFAULT_CONFIG = CouncliConfig(
             binary="codex",
             display_name="Codex CLI",
             capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            command_capabilities=["planning_only", "reads_workspace"],
+            broadcast_capabilities=["planning_only", "reads_workspace"],
+            start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
+            resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             version_command=["codex", "--version"],
             readiness_command=["codex", "doctor"],
             command=[
@@ -233,6 +272,10 @@ DEFAULT_CONFIG = CouncliConfig(
             binary="claude",
             display_name="Claude Code",
             capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            command_capabilities=["planning_only", "reads_workspace"],
+            broadcast_capabilities=["planning_only", "reads_workspace"],
+            start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
+            resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             version_command=["claude", "--version"],
             readiness_command=["claude", "auth", "status"],
             command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
@@ -246,6 +289,10 @@ DEFAULT_CONFIG = CouncliConfig(
             binary="agy",
             display_name="AGY",
             capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            command_capabilities=["planning_only", "reads_workspace"],
+            broadcast_capabilities=["planning_only", "reads_workspace"],
+            start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
+            resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             version_command=["agy", "--version"],
             readiness_command=["agy", "models"],
             command=["agy", "--sandbox", "--print", "{prompt}"],
@@ -259,6 +306,10 @@ DEFAULT_CONFIG = CouncliConfig(
             binary="codewhale",
             display_name="CodeWhale",
             capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            command_capabilities=["reads_workspace", "runs_tools"],
+            broadcast_capabilities=["reads_workspace", "runs_tools"],
+            start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
+            resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             version_command=["codewhale", "--version"],
             readiness_command=["codewhale", "doctor"],
             command=["codewhale", "exec", "{prompt}"],
@@ -272,6 +323,10 @@ DEFAULT_CONFIG = CouncliConfig(
             binary="kimi",
             display_name="Kimi",
             capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            command_capabilities=["reads_workspace", "runs_tools"],
+            broadcast_capabilities=["reads_workspace", "runs_tools"],
+            start_capabilities=["reads_workspace", "writes_workspace", "runs_tools"],
+            resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools"],
             version_command=["kimi", "--version"],
             readiness_command=["kimi", "doctor"],
             command=["kimi", "--prompt", "{prompt}"],

@@ -239,17 +239,15 @@ Hardening:
 
 ## Permission model
 
-The current `broadcast_read_only` boolean is too coarse. Replace it with
-capability metadata:
+Configured assistant commands declare command-level capability metadata. Legacy
+configs may still contain `broadcast_read_only`, but `/broadcast` policy should
+be driven by capabilities and explicit fallback policy:
 
 ```yaml
-capabilities:
-  planning_only: true
-  reads_workspace: true
-  writes_workspace: false
-  runs_tools: false
-  network_access: false
-  full_permission: false
+command_capabilities: ["reads_workspace", "runs_tools"]
+broadcast_capabilities: ["planning_only", "reads_workspace"]
+start_capabilities: ["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"]
+broadcast_policy: safe_only
 ```
 
 Policy examples:

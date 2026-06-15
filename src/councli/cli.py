@@ -92,6 +92,7 @@ PARTICIPANTS_SCHEMA_VERSION = "councli.participants.v1"
 DECISION_SCHEMA_VERSION = "councli.decision.v1"
 VOTE_SCHEMA_VERSION = "councli.vote.v1"
 REVIEW_SCHEMA_VERSION = "councli.review.v1"
+READ_ONLY_DENIED_COMMAND_CAPABILITIES = {"writes_workspace", "full_permission"}
 ARTIFACT_ROOTS = {
     "raw-log": ("session-recordings",),
     "session-archive": ("session-archives",),
@@ -265,6 +266,12 @@ def doctor(
             "binary": health.binary,
             "backend": health.backend,
             "capabilities": runner.config.capabilities,
+            "command_capabilities": {
+                "command": command_capabilities_for(runner, "command"),
+                "broadcast": command_capabilities_for(runner, "broadcast"),
+                "native_start": command_capabilities_for(runner, "native_start"),
+                "native_resume": command_capabilities_for(runner, "native_resume"),
+            },
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,
@@ -298,11 +305,16 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
     shared_supported = any("{prompt}" in part for part in shared_command)
     broadcast_supported = bool(runner.config.broadcast_enabled and shared_supported)
     assistant_supported = bool(runner.config.start_command or runner.config.backend == "tmux")
+    broadcast_policy = command_policy_for_intent(runner, "broadcast")
     return {
         "chat": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "chat")),
         "deliberate": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "deliberate")),
         "vote": intent_readiness(health, supported=shared_supported and adapter_supports_intent(runner, "vote")),
-        "broadcast": intent_readiness(health, supported=broadcast_supported and adapter_supports_intent(runner, "broadcast")),
+        "broadcast": intent_readiness(
+            health,
+            supported=broadcast_supported and adapter_supports_intent(runner, "broadcast"),
+            policy=broadcast_policy,
+        ),
         "assistant": intent_readiness(health, supported=assistant_supported and adapter_supports_intent(runner, "assistant")),
     }
 
@@ -311,11 +323,47 @@ def adapter_supports_intent(runner: AgentRunner, intent: str) -> bool:
     return not runner.config.capabilities or intent in runner.config.capabilities
 
 
-def intent_readiness(health: Any, *, supported: bool) -> dict[str, Any]:
+def command_capabilities_for(runner: AgentRunner, command_kind: str) -> list[str]:
+    config = runner.config
+    if command_kind == "broadcast":
+        if config.broadcast_command:
+            capabilities = config.broadcast_capabilities
+            if not capabilities:
+                capabilities = ["planning_only", "reads_workspace"] if config.broadcast_read_only else config.command_capabilities
+            return stable_capabilities(capabilities)
+        return stable_capabilities(config.command_capabilities)
+    if command_kind == "native_start":
+        return stable_capabilities(config.start_capabilities)
+    if command_kind == "native_resume":
+        return stable_capabilities(config.resume_capabilities)
+    return stable_capabilities(config.command_capabilities)
+
+
+def stable_capabilities(capabilities: list[str]) -> list[str]:
+    return list(dict.fromkeys(capabilities))
+
+
+def command_policy_for_intent(runner: AgentRunner, intent: str) -> tuple[bool, str, str]:
+    if intent != "broadcast":
+        return True, "ready", ""
+    capabilities = set(command_capabilities_for(runner, "broadcast"))
+    denied = sorted(capabilities & READ_ONLY_DENIED_COMMAND_CAPABILITIES)
+    if denied and runner.config.broadcast_policy != "allow_full_permission":
+        return (
+            False,
+            "policy_denied",
+            "broadcast command capabilities exceed safe policy: " + ", ".join(denied),
+        )
+    return True, "ready", ""
+
+
+def intent_readiness(health: Any, *, supported: bool, policy: tuple[bool, str, str] | None = None) -> dict[str, Any]:
     if not getattr(health, "enabled", False):
         return {"ready": False, "status": "disabled", "reason": getattr(health, "reason", "disabled")}
     if not supported:
         return {"ready": False, "status": "unsupported_intent", "reason": "no command for this intent"}
+    if policy is not None and not policy[0]:
+        return {"ready": False, "status": policy[1], "reason": policy[2]}
     if not getattr(health, "available", False):
         reason = str(getattr(health, "reason", "") or "")
         readiness_status = str(getattr(health, "readiness_status", "") or "")
@@ -1672,7 +1720,10 @@ def run_broadcast_round(
         original_runner = runners.get(name)
         original_config = original_runner.config if original_runner is not None else None
         explicit_broadcast_command = bool(original_config and original_config.broadcast_command)
-        broadcast_read_only = bool(original_config and original_config.broadcast_read_only)
+        broadcast_capabilities = command_capabilities_for(original_runner, "broadcast") if original_runner is not None else []
+        policy_ok, policy_status, policy_reason = (
+            command_policy_for_intent(original_runner, "broadcast") if original_runner is not None else (False, "policy_denied", "unknown runner")
+        )
         ledger.append(
             "response.received",
             phase="broadcast",
@@ -1688,8 +1739,12 @@ def run_broadcast_round(
                 "session_context": "headless_subprocess",
                 "retry_policy": "none",
                 "broadcast_command_explicit": explicit_broadcast_command,
-                "read_only_enforced": bool(broadcast_read_only and explicit_broadcast_command),
-                "broadcast_read_only": broadcast_read_only,
+                "command_capabilities": broadcast_capabilities,
+                "permission_policy": original_config.broadcast_policy if original_config is not None else "safe_only",
+                "policy_status": policy_status if policy_ok else "policy_denied",
+                "policy_reason": policy_reason,
+                "read_only_enforced": not bool(set(broadcast_capabilities) & READ_ONLY_DENIED_COMMAND_CAPABILITIES),
+                "broadcast_read_only": bool(original_config and original_config.broadcast_read_only),
             },
         )
         append_project_event(
@@ -1742,6 +1797,9 @@ def runner_unavailable_result(name: str, reason: str) -> Any:
 def broadcast_runner(runner: AgentRunner) -> AgentRunner:
     if not runner.config.broadcast_enabled:
         raise ValueError(f"{runner.name} broadcast is disabled in config")
+    policy_ok, policy_status, policy_reason = command_policy_for_intent(runner, "broadcast")
+    if not policy_ok:
+        raise ValueError(f"{runner.name} {policy_status}: {policy_reason}")
     command = runner.config.broadcast_command or runner.config.command
     if not any("{prompt}" in part for part in command):
         raise ValueError(f"{runner.name} has no prompt-capable broadcast command")
@@ -1863,6 +1921,13 @@ def build_participants_artifact(
             "available": health.available,
             "reason": health.reason,
             "backend": health.backend,
+            "capabilities": runner.config.capabilities,
+            "command_capabilities": {
+                "command": command_capabilities_for(runner, "command"),
+                "broadcast": command_capabilities_for(runner, "broadcast"),
+                "native_start": command_capabilities_for(runner, "native_start"),
+                "native_resume": command_capabilities_for(runner, "native_resume"),
+            },
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,

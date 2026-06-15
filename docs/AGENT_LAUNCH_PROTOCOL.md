@@ -298,8 +298,8 @@ Compatibility mapping:
   `commands.planning`;
 - old `start_command` maps to `commands.native_start`;
 - old `resume_command` maps to `commands.native_resume`;
-- old `broadcast_read_only` becomes advisory only until explicit capabilities
-  exist.
+- old `broadcast_read_only` remains legacy advisory metadata when explicit
+  `broadcast_capabilities` are absent.
 
 ## Readiness state machine
 
