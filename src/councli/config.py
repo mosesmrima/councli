@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Literal
 from datetime import datetime, timezone
@@ -443,7 +444,7 @@ def trust_project_config(
             "executable_hash": digest,
             "executable_fields": list(EXECUTABLE_AGENT_FIELDS),
             "native_fields": list(TRUSTED_NATIVE_FIELDS),
-            "binaries": resolved_agent_binaries(raw),
+            "binaries": resolved_agent_binaries(raw, include_versions=True),
         },
     }
     trust_path = project_trust_path(root)
@@ -553,7 +554,7 @@ def executable_config_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def resolved_agent_binaries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def resolved_agent_binaries(raw: dict[str, Any], *, include_versions: bool = False) -> dict[str, dict[str, Any]]:
     agents = raw.get("agents") if isinstance(raw.get("agents"), dict) else {}
     result: dict[str, dict[str, Any]] = {}
     for name, value in sorted(agents.items()):
@@ -563,13 +564,80 @@ def resolved_agent_binaries(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if not binary:
             continue
         resolved = shutil.which(binary)
-        result[str(name)] = {
+        resolved_path = Path(resolved).resolve() if resolved else None
+        info = {
             "binary": binary,
             "enabled": value.get("enabled", True) is not False,
-            "path": str(Path(resolved).resolve()) if resolved else None,
-            "sha256": file_sha256(Path(resolved).resolve()) if resolved else None,
+            "path": str(resolved_path) if resolved_path else None,
+            "sha256": file_sha256(resolved_path) if resolved_path else None,
         }
+        if include_versions:
+            version, status = probe_agent_version_metadata(
+                command=value.get("version_command"),
+                binary=binary,
+                resolved_path=resolved_path,
+                timeout_seconds=value.get("probe_timeout_seconds", 3),
+            )
+            info.update(
+                {
+                    "version": version,
+                    "version_status": status,
+                    "version_command": value.get("version_command"),
+                }
+            )
+        result[str(name)] = info
     return result
+
+
+def probe_agent_version_metadata(
+    *,
+    command: Any,
+    binary: str,
+    resolved_path: Path | None,
+    timeout_seconds: Any,
+) -> tuple[str | None, str]:
+    if not command:
+        return None, "not_configured"
+    if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
+        return None, "invalid_command"
+    if any("{prompt}" in part for part in command):
+        return None, "invalid_command"
+    if resolved_path is None:
+        return None, "missing_binary"
+    try:
+        timeout = int(timeout_seconds)
+    except (TypeError, ValueError):
+        timeout = 3
+    timeout = max(1, min(timeout, 30))
+    resolved_command = [
+        str(resolved_path) if index == 0 and part == binary else part
+        for index, part in enumerate(command)
+    ]
+    try:
+        proc = subprocess.run(
+            resolved_command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except OSError:
+        return None, "launch_failed"
+
+    output = compact_metadata_text((proc.stdout or proc.stderr or "").strip())
+    if proc.returncode != 0:
+        return output, "failed"
+    return output, "ok"
+
+
+def compact_metadata_text(value: str, *, limit: int = 240) -> str:
+    compact = " ".join((value or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
 
 
 def file_sha256(path: Path) -> str | None:

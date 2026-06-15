@@ -102,9 +102,10 @@ On load, `councli` checks the pinned hash for each agent's trusted control field
 timeouts. If those fields change, the user must review the config and run
 `councli trust`. If `.councli/` was intentionally moved with a project, the user
 must run `councli trust --repair-identity` after reviewing the config.
-Trust pins also record the resolved executable path for each enabled agent; if
-PATH later resolves an assistant binary to a different path, `councli` requires
-review and `councli trust` before running.
+Trust pins also record the resolved executable path, executable SHA-256 hash,
+and trust-time version metadata for each enabled agent. If PATH later resolves
+an assistant binary to a different path, or the binary content changes,
+`councli` requires review and `councli trust` before running.
 Native tmux names are limited to simple identifier characters, and
 `native.detach_key` is limited to simple tmux key chords so tmux format strings
 such as `#(...)` are rejected during config validation.

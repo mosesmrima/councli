@@ -358,7 +358,8 @@ user intent
 Minimum hardening:
 
 - Keep command-bearing config fields pinned in user-local trust state.
-- Record resolved binary path and executable hash at trust time.
+- Record resolved binary path, executable hash, and version metadata at trust
+  time.
 - Require retrust on binary path or executable content drift.
 - Validate tmux session names and detach keys.
 - Reject prompt templates where `{prompt}` is embedded in a larger argv token
@@ -456,8 +457,8 @@ Treat the system as not production-grade until these gates pass:
 2. Adapter manifests or config fields declare command capabilities.
 3. Full-permission broadcast commands are rejected unless explicit
    fallback is configured.
-4. Binary path and executable hash drift after trust are detected; stable
-   version reporting remains a hardening step.
+4. Binary path and executable hash drift after trust are detected; trust pins
+   record stable version metadata.
 5. Keep expanding participant response and decision-artifact validation beyond
    the current schema/version/kind checks.
 6. Review, executor selection, and apply reject missing or invalid machine
@@ -482,7 +483,7 @@ Treat the system as not production-grade until these gates pass:
 5. Keep tightening sidecar and decision-artifact validation with formal schemas.
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
-8. Add stable binary version reporting to trust and security summaries.
+8. Add binary version reporting to human security summaries.
 9. Finish consistent canceled-state recording for all foreground commands.
 10. Keep improving bounded context packing with durable summaries, and extend
     recovery to orphaned artifacts and future indexes.

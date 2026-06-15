@@ -201,14 +201,14 @@ Attack paths:
 Current controls:
 
 - `health()` resolves binaries with `shutil.which`;
-- trust pins command templates, resolved executable paths, and executable
-  SHA-256 hashes for enabled agents;
+- trust pins command templates, resolved executable paths, executable SHA-256
+  hashes, and version metadata for enabled agents;
 - load-time trust checks reject resolved binary path or content-hash drift until
   the user reviews and reruns `councli trust`.
 
 Hardening:
 
-- improve binary version reporting in trust and security summaries;
+- improve binary version reporting in human security summaries;
 - allow absolute command paths in trusted config;
 - show binary path in `doctor` and security reports.
 

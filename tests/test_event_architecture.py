@@ -1775,6 +1775,22 @@ class EventArchitectureTests(unittest.TestCase):
             )
             self.assertEqual(retrusted.returncode, 0, retrusted.stdout + retrusted.stderr)
 
+    def test_trust_pin_records_binary_version_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["version_command"] = [PYTHON, "--version"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            trust_path, _ = trust_project_config(root, reason="test", repair_identity=True)
+
+            trust = json.loads(trust_path.read_text(encoding="utf-8"))
+            alpha = trust["config"]["binaries"]["alpha"]
+            self.assertEqual(alpha["version_status"], "ok")
+            self.assertIn("Python", alpha["version"])
+            self.assertEqual(alpha["version_command"], [PYTHON, "--version"])
+
     def test_doctor_bootstraps_default_config_for_fresh_project(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.set_state_home(Path(tmp) / "state")

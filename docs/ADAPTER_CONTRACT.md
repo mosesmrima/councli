@@ -434,8 +434,8 @@ It also makes cleanup and retry safer:
 6. Keep improving adapter-specific probes for auth, model, quota, and native
    session readiness where each CLI exposes richer safe diagnostics. The
    generic `readiness_command` hook and built-in defaults are in place.
-7. Add stable version reporting to trust metadata. Resolved binary path and
-   executable hash drift are already pinned.
+7. Add stable version reporting to trust metadata. Done; resolved binary path
+   and executable hash drift are already pinned.
 8. Update routing to select commands by intent and policy instead of
    `health().available`.
 
