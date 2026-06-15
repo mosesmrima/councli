@@ -2048,9 +2048,28 @@ def synthesize_shared_turn(
     if not ok_names:
         return "No assistant returned a usable response."
     if dry_run:
-        return f"DRY RUN: would synthesize a unified {intent.name} response from participant answers."
+        answer = f"DRY RUN: would synthesize a unified {intent.name} response from participant answers."
+        write_synthesis_artifact(
+            run_dir=run_dir,
+            ledger=ledger,
+            body=answer,
+            synthesizer="local",
+            source_participants=ok_names,
+            status="ok",
+        )
+        return answer
     if len(ok_names) == 1:
-        return results[ok_names[0]].output.strip()
+        only = ok_names[0]
+        answer = f"Single-source answer from {only} (only one participant responded):\n\n{results[only].output.strip()}"
+        write_synthesis_artifact(
+            run_dir=run_dir,
+            ledger=ledger,
+            body=answer,
+            synthesizer="local",
+            source_participants=ok_names,
+            status="ok",
+        )
+        return answer
 
     synthesizer_name = ok_names[0]
     try:
@@ -2063,20 +2082,87 @@ def synthesize_shared_turn(
     body, trailer = parse_turn_trailer(result.output if result.ok else "")
     if result.ok:
         result = replace(result, output=body)
-    write_shared_turn_result(
-        root=root,
+    write_synthesis_artifact(
         run_dir=run_dir,
         ledger=ledger,
-        name=f"synthesis-{synthesizer_name}",
-        result=result,
-        intent=intent,
-        round_number=len(all_rounds) + 1,
+        body=result.output if result.ok else result.error,
+        synthesizer=synthesizer_name,
+        source_participants=ok_names,
+        status="ok" if result.ok else "failed",
         trailer=trailer,
+        result=result,
     )
     print_participant_status("synthesis", synthesizer_name, result)
     if result.ok and result.output.strip():
         return result.output.strip()
-    return local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
+    fallback = local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
+    write_synthesis_artifact(
+        run_dir=run_dir,
+        ledger=ledger,
+        body=fallback,
+        synthesizer="local",
+        source_participants=ok_names,
+        status="ok",
+    )
+    return fallback
+
+
+def write_synthesis_artifact(
+    *,
+    run_dir: Path,
+    ledger: EventLedger,
+    body: str,
+    synthesizer: str,
+    source_participants: list[str],
+    status: str,
+    trailer: dict[str, Any] | None = None,
+    result: Any | None = None,
+) -> None:
+    body_text = (body or "(empty)").rstrip() + "\n"
+    body_path = run_dir / "synthesis" / "synthesis.md"
+    write_text(body_path, body_text)
+    sidecar = {
+        "schema_version": "councli.response.v1",
+        "id": f"resp_{safe_response_id(run_dir.name)}_synthesis",
+        "request_id": run_dir.name,
+        "kind": "synthesis.response",
+        "participant": f"synthesis-{synthesizer}",
+        "intent": "synthesis",
+        "round": 0,
+        "status": status,
+        "body_ref": body_path.relative_to(run_dir).as_posix(),
+        "summary": str((trailer or {}).get("summary") or compact_for_stdout(body, limit=160)),
+        "continue": False,
+        "recommend": "none",
+        "vote": {"value": "", "confidence": 0.0, "valid": False},
+        "failure_class": getattr(result, "failure_class", "") if result is not None else "",
+        "exit_code": getattr(result, "exit_code", None) if result is not None else None,
+        "duration_seconds": round(float(getattr(result, "duration_seconds", 0.0) or 0.0), 3),
+        "command": getattr(result, "command", []) if result is not None else [],
+        "source_participants": source_participants,
+        "synthesizer": synthesizer,
+    }
+    sidecar_path = run_dir / "synthesis" / "synthesis.response.json"
+    write_json(sidecar_path, sidecar)
+    content_ref = ledger.write_blob("synthesis", "synthesis", body_text)
+    ledger.append(
+        "response.received",
+        phase="synthesis",
+        participant=f"synthesis-{synthesizer}",
+        status=status,
+        refs={
+            "content": content_ref,
+            "sidecar": sidecar_path.relative_to(run_dir).as_posix(),
+        },
+        payload={
+            "mode": "shared_turn",
+            "intent": "synthesis",
+            "source_participants": source_participants,
+            "synthesizer": synthesizer,
+            "sidecar": sidecar_path.relative_to(run_dir).as_posix(),
+        },
+    )
+    ledger.render()
 
 
 def synthesis_prompt(
@@ -2094,7 +2180,10 @@ def synthesis_prompt(
         "You are the temporary synthesizer for a councli shared room.",
         "Use the participant responses below to answer the user as one unified council voice.",
         "Do not mention lifecycle phases or implementation unless the user asked for them.",
-        "Be concise and direct. Preserve important disagreements only if they matter.",
+        "Be concise and direct.",
+        "Name the participants whose outputs support the answer.",
+        "If participants disagree in a meaningful way, state the disagreement instead of hiding it.",
+        "Do not claim consensus when the evidence only supports a partial or single-source answer.",
         "",
         f"User prompt:\n{task}",
         "",

@@ -909,6 +909,7 @@ class EventArchitectureTests(unittest.TestCase):
             blackboard = (run_dir / "blackboard.md").read_text(encoding="utf-8")
             self.assertIn("## Deliberate Round 1", blackboard)
             self.assertIn("## Deliberate Round 2", blackboard)
+            self.assertIn("## Synthesis", blackboard)
             self.assertNotIn("## Orient", blackboard)
 
             alpha_sidecar = json.loads((run_dir / "shared" / "deliberate.round1" / "alpha.response.json").read_text(encoding="utf-8"))
@@ -925,6 +926,9 @@ class EventArchitectureTests(unittest.TestCase):
             )
             self.assertIn("alpha shared deliberate response round 1", packet_text)
             self.assertIn("beta shared deliberate response round 1", packet_text)
+            synthesis = json.loads((run_dir / "synthesis" / "synthesis.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(synthesis["kind"], "synthesis.response")
+            self.assertEqual(synthesis["source_participants"], ["alpha", "beta"])
 
     def test_parse_turn_trailer_strips_metadata(self) -> None:
         body, trailer = parse_turn_trailer(
