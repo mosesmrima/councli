@@ -596,5 +596,6 @@ Do these before adding more collaboration features:
 7. Normalize failure classes instead of relying on raw stderr strings.
 8. Improve UI labels: chat session, turn, optional round.
 9. Add `councli verify` to check events, sidecars, artifacts, and projections.
-10. Add bounded context packing so participants receive relevant blackboard
-    excerpts rather than the whole history.
+10. Keep improving bounded context packing with durable summaries so
+    participants receive relevant blackboard excerpts rather than the whole
+    history.

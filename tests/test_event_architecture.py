@@ -21,6 +21,7 @@ from councli.cli import (
     implementation_runner,
     native_session_runner,
     parse_turn_trailer,
+    render_peer_context,
     supports_native_session,
 )
 from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
@@ -1188,6 +1189,67 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(trailer["summary"], "key point")
         self.assertEqual(trailer["vote"], "sqlite")
         self.assertEqual(trailer["confidence"], 0.8)
+
+    def test_render_peer_context_applies_explicit_context_budget(self) -> None:
+        def ok_result(name: str, body: str) -> dict[str, AgentRunResult]:
+            return {
+                "result": AgentRunResult(
+                    name=name,
+                    ok=True,
+                    skipped=False,
+                    exit_code=0,
+                    output=body,
+                    error="",
+                    command=["fake"],
+                )
+            }
+
+        rounds = [
+            {"alpha": ok_result("alpha", "round-one-tail")},
+            {
+                "alpha": ok_result("alpha", "a" * 80),
+                "beta": ok_result("beta", "b" * 80),
+            },
+            {
+                "alpha": ok_result("alpha", "c" * 80),
+                "beta": ok_result("beta", "d" * 80),
+            },
+        ]
+
+        context = render_peer_context(
+            rounds,
+            latest_rounds=2,
+            per_participant_limit=40,
+            total_limit=260,
+            overflow_ref="/tmp/run/blackboard.md",
+        )
+
+        self.assertNotIn("Round 1", context)
+        self.assertIn("## Round 2", context)
+        self.assertIn("[truncated by councli after 40 characters]", context)
+        self.assertIn("context truncated by councli after 260 characters", context)
+        self.assertIn("/tmp/run/blackboard.md", context)
+        self.assertNotIn("round-one-tail", context)
+
+    def test_render_peer_context_can_summarize_or_omit_failures(self) -> None:
+        failed = AgentRunResult(
+            name="beta",
+            ok=False,
+            skipped=False,
+            exit_code=1,
+            output="",
+            error="very long authentication details",
+            command=["fake"],
+            failure_class="auth_required",
+        )
+        rounds = [{"beta": {"result": failed}}]
+
+        summary_context = render_peer_context(rounds, include_failures="summary")
+        self.assertIn("auth_required: very long authentication details", summary_context)
+
+        omitted_context = render_peer_context(rounds, include_failures="omit")
+        self.assertNotIn("beta", omitted_context)
+        self.assertNotIn("authentication", omitted_context)
 
     def test_vote_decision_rejects_invalid_sidecar_even_with_trailer_vote(self) -> None:
         result = AgentRunResult(

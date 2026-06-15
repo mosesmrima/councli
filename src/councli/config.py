@@ -162,6 +162,13 @@ class ArtifactConfig(BaseModel):
         return value
 
 
+class ContextConfig(BaseModel):
+    peer_context_latest_rounds: int = Field(default=2, ge=1, le=10)
+    peer_context_per_participant_chars: int = Field(default=6000, ge=1, le=200_000)
+    peer_context_total_chars: int = Field(default=24000, ge=1, le=500_000)
+    peer_context_include_failures: Literal["summary", "full", "omit"] = "summary"
+
+
 class NativeConfig(BaseModel):
     tmux_socket: str = "councli"
     detach_key: str = "C-]"
@@ -188,6 +195,7 @@ class CouncliConfig(BaseModel):
     agents: dict[str, AgentConfig]
     consensus: ConsensusConfig = Field(default_factory=ConsensusConfig)
     artifacts: ArtifactConfig = Field(default_factory=ArtifactConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     native: NativeConfig = Field(default_factory=NativeConfig)
 
 

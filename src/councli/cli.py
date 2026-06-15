@@ -1895,10 +1895,22 @@ def run_shared_turn(
     all_rounds: list[dict[str, Any]] = []
     latest_results: dict[str, Any] = dict(degraded)
     round_count = 0
+    context_config = load_config_model(root).context
     try:
         for round_number in range(1, intent.max_rounds + 1):
             round_count = round_number
-            context = render_peer_context(all_rounds) if round_number > 1 else ""
+            context = (
+                render_peer_context(
+                    all_rounds,
+                    latest_rounds=context_config.peer_context_latest_rounds,
+                    per_participant_limit=context_config.peer_context_per_participant_chars,
+                    total_limit=context_config.peer_context_total_chars,
+                    include_failures=context_config.peer_context_include_failures,
+                    overflow_ref=str(run_dir / "blackboard.md"),
+                )
+                if round_number > 1
+                else ""
+            )
             phase = f"{intent.name}.round{round_number}"
             packet_prompts = write_shared_turn_packets(
                 ledger=ledger,
@@ -2213,19 +2225,47 @@ def default_turn_trailer() -> dict[str, Any]:
     return {"continue": False, "recommend": "none", "summary": ""}
 
 
-def render_peer_context(all_rounds: list[dict[str, dict[str, Any]]], *, per_participant_limit: int = 6000) -> str:
+def render_peer_context(
+    all_rounds: list[dict[str, dict[str, Any]]],
+    *,
+    latest_rounds: int = 2,
+    per_participant_limit: int = 6000,
+    total_limit: int = 24000,
+    include_failures: str = "summary",
+    overflow_ref: str | None = None,
+) -> str:
     lines: list[str] = []
-    for index, round_data in enumerate(all_rounds, start=1):
+    indexed_rounds = list(enumerate(all_rounds, start=1))
+    if latest_rounds > 0:
+        indexed_rounds = indexed_rounds[-latest_rounds:]
+    for index, round_data in indexed_rounds:
         lines.append(f"## Round {index}")
         for name, data in round_data.items():
             result = data["result"]
-            body = result.output if result.ok else result.error
             status = "ok" if result.ok else "skipped" if result.skipped else "failed"
+            body = peer_context_body(result, include_failures=include_failures)
+            if body is None:
+                continue
             lines.extend([f"### {name} ({status})", ""])
             lines.append(bound_peer_body(body, limit=per_participant_limit))
             lines.append("")
         lines.append("")
-    return "\n".join(lines).strip()
+    context = "\n".join(lines).strip()
+    return bound_context_text(context, limit=total_limit, overflow_ref=overflow_ref)
+
+
+def peer_context_body(result: Any, *, include_failures: str) -> str | None:
+    if result.ok:
+        return result.output
+    if include_failures == "omit":
+        return None
+    if include_failures == "full":
+        return result.error
+    reason = getattr(result, "failure_class", "") or "unavailable"
+    detail = (result.error or "").strip()
+    if not detail:
+        return reason
+    return f"{reason}: {detail}"
 
 
 def bound_peer_body(body: str, *, limit: int) -> str:
@@ -2233,6 +2273,19 @@ def bound_peer_body(body: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + f"\n\n[truncated by councli after {limit} characters]"
+
+
+def bound_context_text(text: str, *, limit: int, overflow_ref: str | None = None) -> str:
+    if not text or len(text) <= limit:
+        return text
+    detail = f"context truncated by councli after {limit} characters"
+    if overflow_ref:
+        detail += f"; full evidence: {overflow_ref}"
+    marker = f"\n\n[{detail}]"
+    available = max(0, limit - len(marker))
+    if available <= 0:
+        return marker.strip()
+    return text[:available].rstrip() + marker
 
 
 def should_continue_shared_turn(*, intent: TurnIntent, round_number: int, parsed_round: dict[str, dict[str, Any]]) -> bool:

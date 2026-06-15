@@ -174,6 +174,17 @@ Consensus settings:
   count toward majority. Low-confidence responses remain in the transcript and
   decision JSON, but they do not approve a plan or implementation.
 
+Context packing settings:
+
+- `peer_context_latest_rounds`: number of prior rounds included in the prompt
+  excerpt for a follow-up round.
+- `peer_context_per_participant_chars`: maximum characters copied from one
+  participant into the peer-context excerpt.
+- `peer_context_total_chars`: maximum characters copied into the whole
+  peer-context excerpt before councli points agents at the full blackboard.
+- `peer_context_include_failures`: `summary`, `full`, or `omit` for failed
+  participant output in later-round prompts.
+
 Native session settings:
 
 - `tmux_socket`: dedicated tmux socket name, default `councli`.

@@ -322,15 +322,15 @@ Preferred cache layers:
 4. Participant summaries: compact memory per participant.
 5. SQLite index: search and listing.
 
-Context-packing policy should be explicit:
+Peer-round context packing is now explicit for shared turns:
 
 ```json
 {
-  "max_blackboard_chars": 12000,
-  "include_latest_rounds": 2,
-  "include_decisions": true,
-  "include_failures": "summary",
-  "overflow_ref": "blackboard.md"
+  "peer_context_latest_rounds": 2,
+  "peer_context_per_participant_chars": 6000,
+  "peer_context_total_chars": 24000,
+  "peer_context_include_failures": "summary",
+  "overflow_ref": ".councli/runs/<run>/blackboard.md"
 }
 ```
 
@@ -387,7 +387,9 @@ Before treating the state layer as production-grade:
 3. Extend recovery to malformed or partially truncated logs. `councli recover`
    already rebuilds projections from valid logs, and `councli verify` checks
    missing refs, invalid sidecars, and stale projections.
-4. Add bounded context-packing policy for blackboard excerpts.
+4. Keep improving context packing with durable round summaries and participant
+   summaries. Shared peer rounds already have explicit round, participant, and
+   total character budgets.
 5. Add SQLite WAL index only after artifact protocol stabilizes.
 6. Add retention, redaction, and garbage-collection commands.
 8. Add tests that spawn two `councli` processes writing the same run ledger.
