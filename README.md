@@ -147,7 +147,11 @@ Each agent has:
   `broadcast`, and `assistant`. Empty means infer support from configured
   commands.
 - `version_command`: optional lightweight version probe command.
+- `readiness_command`: optional bounded, non-mutating probe for auth/model/quota
+  readiness. Nonzero output is classified into statuses such as
+  `auth_required`, `model_unconfigured`, or `quota_unavailable` when possible.
 - `probe_timeout_seconds`: timeout for version/probe commands.
+- `readiness_timeout_seconds`: timeout for the readiness probe.
 - `command`: argv template. For `exec`, `{prompt}` is replaced with the generated prompt.
 - `broadcast_command`: optional argv template for read-only broadcast/planning.
 - `broadcast_enabled`: whether the agent can participate in broadcast.
@@ -212,7 +216,8 @@ session.
 
 `councli doctor --json` emits per-intent readiness objects, so setup scripts can
 distinguish `ready`, `missing_binary`, `unsupported_intent`, `tmux_unavailable`,
-and disabled participants without scraping the table output.
+`auth_required`, `model_unconfigured`, `quota_unavailable`, and disabled
+participants without scraping the table output.
 
 Native tmux-backed sessions are supported for CLIs that behave better interactively:
 
@@ -375,7 +380,8 @@ deliberation, explicit voting, native attach, durable artifacts, and adapter
 readiness. Hidden experimental worktree execution/review commands still exist
 for development, but they are not the MVP path. Next steps are:
 
-1. Add adapter-specific auth/quota probes where each CLI exposes safe commands.
+1. Configure adapter-specific readiness probes for more assistants where each
+   CLI exposes a safe, cheap diagnostic command.
 2. Add a richer interactive TUI once the protocol proves useful.
 3. Decide whether to delete or separately package the hidden execution/review
    prototype.

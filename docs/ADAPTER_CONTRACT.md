@@ -7,11 +7,12 @@ eventually implement.
 
 The current implementation has useful primitives, but it is still too coarse:
 
-- `health()` mostly means "binary exists";
-- `available` does not say which intent is supported;
+- `health()` checks binary/version and can run a configured bounded
+  `readiness_command`, but most adapters still need safe command defaults;
+- intent readiness is capability-aware for the public MVP intents;
 - `broadcast_read_only` is a boolean, not a permission model;
-- authentication, quota, model readiness, and provider selection are inferred
-  from stderr text;
+- authentication, quota, model readiness, and provider selection are normalized
+  from probe or run output text unless a CLI exposes a richer machine report;
 - shared-turn trailers are text, not validated machine records.
 
 The target model is: an adapter is a small capability manifest plus a set of
@@ -273,7 +274,13 @@ Probe result shape:
 }
 ```
 
-The probe output should be recorded in `doctor`, turn ledgers, and status views.
+Current config supports `version_command`, `readiness_command`,
+`probe_timeout_seconds`, and `readiness_timeout_seconds`. `doctor --json`
+records version/readiness status and maps nonzero readiness probes into common
+failure classes such as `auth_required`, `model_unconfigured`,
+`quota_unavailable`, or `readiness_failed`.
+
+The probe output should also be recorded in turn ledgers and status views.
 Repeated failures should degrade once per turn instead of spamming every round.
 
 ## Response sidecar contract
@@ -413,15 +420,17 @@ It also makes cleanup and retry safer:
 ## Migration path
 
 1. Add capability fields to config as optional metadata while preserving old
-   fields.
+   fields. Done for MVP intents.
 2. Teach `doctor` to show intent readiness: chat, deliberate, vote, broadcast,
-   review, execute, native attach.
+   review, execute, native attach. Done for public MVP intents.
 3. Emit `.response.json` sidecars for shared turns while still accepting
    `COUNCLI_TRAILER` as fallback.
 4. Add JSON Schema files for adapter manifests and response sidecars.
 5. Replace `broadcast_read_only` with command-level capabilities and an
    explicit fallback policy.
-6. Add adapter probes for auth, model, quota, and native session readiness.
+6. Add adapter-specific default probes for auth, model, quota, and native
+   session readiness where each CLI exposes safe, cheap diagnostics. The generic
+   `readiness_command` hook is in place.
 7. Pin resolved binary path/version in trust metadata or warn on drift.
 8. Update routing to select commands by intent and policy instead of
    `health().available`.

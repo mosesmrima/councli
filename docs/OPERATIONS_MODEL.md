@@ -203,8 +203,10 @@ Cleanup must default to dry-run for destructive bulk operations.
 
 ## Health model
 
-Current `health()` checks binary presence and tmux availability. That is not
-enough for operational readiness.
+Current `health()` checks binary presence, tmux availability, version probes,
+and an optional configured readiness probe. It still needs more adapter-specific
+safe defaults before it can fully prove auth/model/quota readiness for every
+assistant.
 
 Target health dimensions:
 
@@ -375,7 +377,8 @@ Before public release:
 1. Run-local cross-process locks.
 2. Process-group cancellation and timeout cleanup.
 3. First-class canceled state.
-4. Adapter probes for auth/model/quota.
+4. Adapter-specific default probes for auth/model/quota where safe commands
+   exist.
 5. Capability-aware routing.
 6. Artifact retention and redaction.
 7. Worktree prune workflow.

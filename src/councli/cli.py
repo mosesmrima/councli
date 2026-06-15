@@ -252,6 +252,8 @@ def doctor(
             "capabilities": runner.config.capabilities,
             "version": health.version,
             "version_status": health.version_status,
+            "readiness_status": health.readiness_status,
+            "readiness_detail": health.readiness_detail,
             "path": health.path,
             "available": health.available,
             "reason": health.reason,
@@ -301,6 +303,9 @@ def intent_readiness(health: Any, *, supported: bool) -> dict[str, Any]:
         return {"ready": False, "status": "unsupported_intent", "reason": "no command for this intent"}
     if not getattr(health, "available", False):
         reason = str(getattr(health, "reason", "") or "")
+        readiness_status = str(getattr(health, "readiness_status", "") or "")
+        if readiness_status and readiness_status not in {"ok", "not_configured", "not_checked"}:
+            return {"ready": False, "status": readiness_status, "reason": reason}
         return {"ready": False, "status": normalize_health_status(reason), "reason": reason}
     return {"ready": True, "status": "ready", "reason": getattr(health, "reason", "available")}
 
@@ -313,6 +318,14 @@ def normalize_health_status(reason: str) -> str:
         return "tmux_unavailable"
     if "disabled" in lowered:
         return "disabled"
+    if "auth" in lowered or "login" in lowered:
+        return "auth_required"
+    if "quota" in lowered or "rate limit" in lowered or "billing" in lowered or "subscription" in lowered:
+        return "quota_unavailable"
+    if "model" in lowered or "provider" in lowered:
+        return "model_unconfigured"
+    if "readiness probe" in lowered:
+        return "readiness_failed"
     return "unavailable"
 
 

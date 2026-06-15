@@ -55,6 +55,8 @@ class AgentHealth:
     backend: str = "exec"
     version: str | None = None
     version_status: str = "not_checked"
+    readiness_status: str = "not_configured"
+    readiness_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,40 +113,76 @@ class AgentRunner:
                 version_status="missing_binary",
             )
         version, version_status = self.probe_version(path)
+        ready, readiness_status, readiness_detail = self.probe_readiness(path)
         return AgentHealth(
             name=self.name,
             enabled=True,
             binary=self.config.binary,
             path=path,
-            available=True,
-            reason="available",
+            available=ready,
+            reason="available" if ready else readiness_detail or readiness_status,
             backend=self.config.backend,
             version=version,
             version_status=version_status,
+            readiness_status=readiness_status,
+            readiness_detail=readiness_detail,
         )
 
     def probe_version(self, binary_path: str) -> tuple[str | None, str]:
         command = self.config.version_command
         if not command:
             return None, "not_configured"
-        resolved_command = [binary_path if index == 0 and part == self.config.binary else part for index, part in enumerate(command)]
+        proc, status = self.run_probe(command, binary_path=binary_path, timeout_seconds=self.config.probe_timeout_seconds)
+        if proc is None:
+            return None, status
+        output = (proc.stdout or proc.stderr or "").strip()
+        if proc.returncode != 0:
+            return compact_one_line(output), "failed"
+        return compact_one_line(output), "ok"
+
+    def probe_readiness(self, binary_path: str) -> tuple[bool, str, str | None]:
+        command = self.config.readiness_command
+        if not command:
+            return True, "not_configured", None
+        proc, status = self.run_probe(command, binary_path=binary_path, timeout_seconds=self.config.readiness_timeout_seconds)
+        if proc is None:
+            detail = f"readiness probe {status.replace('_', ' ')}"
+            return False, status, detail
+        output = (proc.stdout or proc.stderr or "").strip()
+        compact = compact_one_line(output)
+        if proc.returncode == 0:
+            return True, "ok", compact
+        failure_class = classify_agent_failure(output)
+        if failure_class == "launch_failed":
+            failure_class = "readiness_failed"
+        detail = f"readiness probe failed: {compact}" if compact else "readiness probe failed"
+        return False, failure_class, detail
+
+    def run_probe(
+        self,
+        command: list[str],
+        *,
+        binary_path: str,
+        timeout_seconds: int,
+    ) -> tuple[subprocess.CompletedProcess[str] | None, str]:
         try:
+            resolved_command = [
+                binary_path if index == 0 and part == self.config.binary else part
+                for index, part in enumerate(command)
+            ]
             proc = subprocess.run(
                 resolved_command,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=self.config.probe_timeout_seconds,
+                timeout=timeout_seconds,
                 check=False,
             )
         except subprocess.TimeoutExpired:
             return None, "timeout"
         except OSError:
             return None, "launch_failed"
-        output = (proc.stdout or proc.stderr or "").strip()
-        if proc.returncode != 0:
-            return compact_one_line(output), "failed"
-        return compact_one_line(output), "ok"
+        return proc, "ok"
 
     def render_command(self, prompt: str) -> list[str]:
         return [part.replace("{prompt}", prompt) for part in self.config.command]

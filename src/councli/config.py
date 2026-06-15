@@ -24,7 +24,9 @@ EXECUTABLE_AGENT_FIELDS = (
     "display_name",
     "capabilities",
     "version_command",
+    "readiness_command",
     "probe_timeout_seconds",
+    "readiness_timeout_seconds",
     "command",
     "broadcast_command",
     "broadcast_enabled",
@@ -74,7 +76,9 @@ class AgentConfig(BaseModel):
     display_name: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     version_command: list[str] | None = None
+    readiness_command: list[str] | None = None
     probe_timeout_seconds: int = Field(default=3, ge=1, le=30)
+    readiness_timeout_seconds: int = Field(default=10, ge=1, le=120)
     command: list[str]
     broadcast_command: list[str] | None = None
     broadcast_enabled: bool = True
@@ -100,11 +104,11 @@ class AgentConfig(BaseModel):
                 raise ValueError("{prompt} must be a standalone argv token")
         return value
 
-    @field_validator("version_command")
+    @field_validator("version_command", "readiness_command")
     @classmethod
-    def validate_version_command(cls, value: list[str] | None) -> list[str] | None:
+    def validate_probe_command(cls, value: list[str] | None) -> list[str] | None:
         if value is not None and any("{prompt}" in part for part in value):
-            raise ValueError("version_command must not contain {prompt}")
+            raise ValueError("probe commands must not contain {prompt}")
         return value
 
 

@@ -1263,9 +1263,41 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(alpha["display_name"], "Alpha Test Agent")
             self.assertEqual(alpha["version_status"], "ok")
             self.assertIn("Python", alpha["version"])
+            self.assertEqual(alpha["readiness_status"], "not_configured")
             self.assertTrue(alpha["intents"]["chat"]["ready"])
             self.assertFalse(alpha["intents"]["vote"]["ready"])
             self.assertEqual(alpha["intents"]["vote"]["status"], "unsupported_intent")
+
+    def test_doctor_json_reports_configured_readiness_probe_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["readiness_command"] = [
+                PYTHON,
+                "-c",
+                "import sys; sys.stderr.write('No model configured\\n'); sys.exit(7)",
+            ]
+            raw["agents"]["alpha"]["readiness_timeout_seconds"] = 5
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+            trust_project_config(root, reason="test", repair_identity=True)
+
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            data = json.loads(proc.stdout)
+            alpha = next(agent for agent in data["agents"] if agent["agent"] == "alpha")
+            self.assertFalse(alpha["available"])
+            self.assertEqual(alpha["readiness_status"], "model_unconfigured")
+            self.assertIn("No model configured", alpha["readiness_detail"])
+            self.assertFalse(alpha["intents"]["chat"]["ready"])
+            self.assertEqual(alpha["intents"]["chat"]["status"], "model_unconfigured")
 
     def test_artifacts_scrub_and_prune_are_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
