@@ -1118,6 +1118,28 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
             self.assertIn("Verify ok", verified.stdout)
 
+            (run_dir / "state.json").unlink()
+            (run_dir / "blackboard.md").unlink()
+            recovered = subprocess.run(
+                [PYTHON, "-m", "councli", "recover", run_dir.name, "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+            self.assertIn("Recover ok", recovered.stdout)
+            self.assertTrue((run_dir / "state.json").exists())
+            self.assertTrue((run_dir / "blackboard.md").exists())
+            reverified = subprocess.run(
+                [PYTHON, "-m", "councli", "verify", run_dir.name, "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(reverified.returncode, 0, reverified.stdout + reverified.stderr)
+
             (run_dir / "shared" / "deliberate.round1" / "alpha.response.json").unlink()
             corrupted = subprocess.run(
                 [PYTHON, "-m", "councli", "verify", run_dir.name, "-C", str(root), "--json"],

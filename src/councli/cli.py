@@ -3444,6 +3444,45 @@ def verify(
         raise typer.Exit(code=2)
 
 
+@app.command()
+def recover(
+    run: Annotated[str, typer.Argument(help="Run id, unique prefix, or 'latest'.")] = "latest",
+    root: RootOpt = Path.cwd(),
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable recovery JSON.")] = False,
+) -> None:
+    """Rebuild a run's state.json and blackboard.md projections."""
+    run_dir = resolve_run_dir(root, run)
+    try:
+        events = read_events(run_dir)
+        if not events:
+            raise ValueError("event log is empty")
+        EventLedger(run_dir).render()
+        report = verify_run_artifacts(run_dir)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        report = {
+            "run": run_dir.name,
+            "path": str(run_dir),
+            "ok": False,
+            "status": "failed",
+            "recovered": False,
+            "errors": [str(exc)],
+        }
+    else:
+        report["recovered"] = report["ok"]
+    if json_output:
+        console.print_json(data=report)
+    else:
+        style = "green" if report["ok"] else "red"
+        console.print(f"[bold {style}]Recover {report['status']}:[/] {run_dir.name}")
+        if report.get("ok"):
+            console.print(f"Rebuilt: {run_dir / 'state.json'}")
+            console.print(f"Rebuilt: {run_dir / 'blackboard.md'}")
+        for error in report.get("errors", []):
+            console.print(f"- {error}")
+    if not report["ok"]:
+        raise typer.Exit(code=2)
+
+
 def verify_run_artifacts(run_dir: Path) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []

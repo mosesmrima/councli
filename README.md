@@ -256,6 +256,8 @@ councli show latest
 councli show <run-id-prefix> --blackboard
 councli verify latest
 councli verify <run-id-prefix> --json
+councli recover latest
+councli recover <run-id-prefix> --json
 councli artifacts list
 councli artifacts scrub --dry-run
 councli artifacts scrub --write
@@ -268,6 +270,8 @@ implementation status when present. `show` reopens a run's durable state and
 prints the paths to its blackboard, machine state, event log, and artifacts.
 `verify` checks a run's event log, refs, response sidecars, and rebuildable
 projections before you trust, export, or share the output.
+`recover` rebuilds `state.json` and `blackboard.md` from the run's event log
+and artifacts, then verifies the rebuilt projections.
 `artifacts scrub` redacts common secret-looking tokens from text artifacts and
 defaults to dry-run. `artifacts prune` removes old raw logs, session archives,
 and snapshots by default, and only deletes when `--delete` is supplied.

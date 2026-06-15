@@ -38,8 +38,8 @@ Main gaps:
   needed.
 - `new_run_dir` can still race between `exists()` and `mkdir()` if two
   processes choose the same timestamped run id.
-- There is no explicit recovery command to rebuild projections and indexes from
-  event logs.
+- `councli recover` rebuilds `state.json` and `blackboard.md` projections from
+  event logs and artifacts. Index rebuild remains future work.
 - There is no retention/garbage-collection model for run artifacts and blobs.
 
 ## Existing primitives to prefer
@@ -274,7 +274,7 @@ or relying on hidden terminal sessions.
 Recovery command target:
 
 ```text
-councli runs recover <run-id>
+councli recover <run-id>
 ```
 
 Recovery should:
@@ -352,7 +352,7 @@ Current and future commands:
 
 ```text
 councli verify <run-id>
-councli runs recover <run-id>
+councli recover <run-id>
 councli runs prune --older-than 30d --dry-run
 councli runs gc --dry-run
 councli index rebuild
@@ -384,7 +384,8 @@ Before treating the state layer as production-grade:
 
 1. Add schema versions to events, requests, responses, and decisions.
 2. Keep expanding `.response.json` validation before machine decisions.
-3. Add recovery commands for malformed logs. `councli verify` already checks
+3. Extend recovery to malformed or partially truncated logs. `councli recover`
+   already rebuilds projections from valid logs, and `councli verify` checks
    missing refs, invalid sidecars, and stale projections.
 4. Add bounded context-packing policy for blackboard excerpts.
 5. Add SQLite WAL index only after artifact protocol stabilizes.

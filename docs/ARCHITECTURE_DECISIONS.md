@@ -349,7 +349,7 @@ Failure handling:
 - Cross-process writes need `fcntl.flock` around event append and projection
   updates.
 - Partial writes need temp-file plus atomic replace.
-- A future `runs recover` should rebuild projections from events/artifacts.
+- `councli recover` rebuilds projections from events/artifacts.
 
 Current evidence:
 
@@ -582,7 +582,7 @@ Do not call the architecture production-grade until these gates pass:
 7. Headless subprocesses run in process groups and clean up on timeout; Ctrl-C
    cleanup still needs the same process-group path.
 8. `councli verify` validates events, refs, sidecars, and projections.
-9. `runs recover` can rebuild `state.json` and `blackboard.md`.
+9. `councli recover` can rebuild `state.json` and `blackboard.md`.
 10. Context packing passes bounded blackboard excerpts instead of full history.
 11. Retention/redaction exists for raw logs and artifacts.
 12. Integration tests cover fake binaries for each adapter command shape.

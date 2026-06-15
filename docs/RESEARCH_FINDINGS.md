@@ -459,8 +459,8 @@ Treat the system as not production-grade until these gates pass:
    remaining machine decision.
 6. Review, executor selection, and apply reject missing or invalid sidecars.
 7. Run event writes use cross-process `fcntl.flock`.
-8. `councli verify` and `runs recover` can rebuild projections and detect missing
-   refs.
+8. `councli verify` and `councli recover` can rebuild projections and detect
+   missing refs.
 9. Ctrl-C consistently records cancellation across commands and terminates
    participant process groups.
 10. tmux sessions in the wrong cwd are live but not ready.
@@ -481,6 +481,6 @@ Treat the system as not production-grade until these gates pass:
 7. Add normalized failure classification.
 8. Add binary version/hash trust drift checks.
 9. Finish consistent canceled-state recording for all foreground commands.
-10. Add `councli verify`, `runs recover`, and bounded context packing.
+10. Add bounded context packing and malformed-log recovery.
 11. Add retention/redaction and optional metrics export.
 12. Add SQLite WAL index only after the artifact protocol is stable.
