@@ -2601,21 +2601,16 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
         if not result.ok:
             abstentions[name] = result.error or "unavailable"
             continue
-        sidecar = data.get("sidecar") or {}
-        vote_data = sidecar.get("vote") if isinstance(sidecar, dict) else None
-        vote = str((vote_data or {}).get("value") or "").strip() if isinstance(vote_data, dict) else ""
-        if not vote:
-            vote = str(trailer.get("vote") or "").strip()
-        if not vote and str(result.output or "").lstrip().startswith("DRY RUN:"):
+        if str(result.output or "").lstrip().startswith("DRY RUN:"):
             abstentions[name] = "dry run"
             continue
+        sidecar = data.get("sidecar") or {}
+        vote, invalid_reason = validated_vote_from_sidecar(name, sidecar)
         if not vote:
-            abstentions[name] = "missing structured vote"
+            trailer_vote = str(trailer.get("vote") or "").strip()
+            abstentions[name] = invalid_reason or ("invalid response sidecar" if trailer_vote else "missing structured vote")
             continue
-        if vote:
-            votes[name] = vote
-        else:
-            abstentions[name] = "empty vote"
+        votes[name] = vote
     counts: dict[str, int] = {}
     for vote in votes.values():
         counts[vote] = counts.get(vote, 0) + 1
@@ -2630,6 +2625,33 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
         "abstentions": abstentions,
         "reason": "explicit /vote result" if winner else "no usable votes",
     }
+
+
+def validated_vote_from_sidecar(name: str, sidecar: Any) -> tuple[str, str]:
+    if not isinstance(sidecar, dict):
+        return "", "invalid response sidecar"
+    if sidecar.get("schema_version") != "councli.response.v1":
+        return "", "invalid response sidecar schema"
+    if sidecar.get("kind") != "participant.response":
+        return "", "invalid response sidecar kind"
+    if sidecar.get("participant") != name:
+        return "", "response sidecar participant mismatch"
+    if sidecar.get("intent") != "vote":
+        return "", "response sidecar intent is not vote"
+    if sidecar.get("status") != "ok":
+        return "", f"response sidecar status is {sidecar.get('status') or 'unknown'}"
+    vote_data = sidecar.get("vote")
+    if not isinstance(vote_data, dict):
+        return "", "missing sidecar vote"
+    if vote_data.get("valid") is not True:
+        return "", "sidecar vote is not valid"
+    value = str(vote_data.get("value") or "").strip()
+    if not value:
+        return "", "empty sidecar vote"
+    confidence = vote_data.get("confidence")
+    if not isinstance(confidence, int | float) or not 0.0 <= float(confidence) <= 1.0:
+        return "", "invalid sidecar vote confidence"
+    return value, ""
 
 
 def print_shared_vote_decision(decision: dict[str, Any]) -> None:

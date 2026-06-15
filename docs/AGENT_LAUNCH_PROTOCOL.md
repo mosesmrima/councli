@@ -589,7 +589,8 @@ Do these before adding more collaboration features:
 2. Add safe adapter-specific default probes for auth, model, provider, and
    quota readiness where each CLI exposes cheap diagnostics.
 3. Keep tightening JSON sidecars for shared turns.
-4. Validate sidecars before `/vote`, `/review`, executor selection, or apply.
+4. Extend sidecar validation from `/vote` to `/review`, executor selection,
+   and apply.
 5. Keep run-local `fcntl.flock` coverage around every event/projection write.
 6. Finish process-group cancellation for foreground Ctrl-C.
 7. Normalize failure classes instead of relying on raw stderr strings.

@@ -553,7 +553,8 @@ Participant unavailable:
 4. Update blackboard rendering to group arbitrary `intent.round` phases before
    legacy phases.
 5. Add normalized failure classification.
-6. Move `/vote` decisions to `decisions/vote.json`.
+6. Keep `/vote` decisions in `decisions/vote.json` and reject invalid vote
+   sidecars.
 7. Add adapter capability metadata.
 8. Add SQLite WAL index only after run-local locking and sidecars are stable.
 9. Add optional JSON-RPC/Unix-socket daemon only if the interactive shell needs

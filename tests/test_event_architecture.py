@@ -13,8 +13,15 @@ from pathlib import Path
 
 import yaml
 
-from councli.agents import AgentRunner
-from councli.cli import broadcast_runner, implementation_runner, native_session_runner, parse_turn_trailer, supports_native_session
+from councli.agents import AgentRunResult, AgentRunner
+from councli.cli import (
+    broadcast_runner,
+    decide_shared_vote,
+    implementation_runner,
+    native_session_runner,
+    parse_turn_trailer,
+    supports_native_session,
+)
 from councli.config import DEFAULT_CONFIG, AgentConfig, project_config_path, trust_project_config
 from councli.council import decide_council, decide_review, empty_vote, next_executor, parse_review, run_blackboard_council
 from councli.events import EventLedger, read_events
@@ -1105,6 +1112,40 @@ class EventArchitectureTests(unittest.TestCase):
         self.assertEqual(trailer["summary"], "key point")
         self.assertEqual(trailer["vote"], "sqlite")
         self.assertEqual(trailer["confidence"], 0.8)
+
+    def test_vote_decision_rejects_invalid_sidecar_even_with_trailer_vote(self) -> None:
+        result = AgentRunResult(
+            name="alpha",
+            ok=True,
+            skipped=False,
+            exit_code=0,
+            output="answer",
+            error="",
+            command=["fake"],
+        )
+        sidecar = {
+            "schema_version": "councli.response.v1",
+            "kind": "participant.response",
+            "participant": "alpha",
+            "intent": "vote",
+            "status": "ok",
+            "vote": {"value": "", "confidence": 0.9, "valid": False},
+        }
+
+        decision = decide_shared_vote(
+            {
+                "alpha": {
+                    "result": result,
+                    "trailer": {"vote": "sqlite", "confidence": 0.9},
+                    "sidecar": sidecar,
+                }
+            },
+            ["alpha"],
+        )
+
+        self.assertFalse(decision["approved"])
+        self.assertEqual(decision["votes"], {})
+        self.assertEqual(decision["abstentions"], {"alpha": "sidecar vote is not valid"})
 
     def test_cli_chat_supports_dry_attach_and_broadcast(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

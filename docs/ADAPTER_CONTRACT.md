@@ -406,7 +406,7 @@ Capability-aware routing improves reliability:
 - `doctor` can report exactly which intents each assistant supports;
 - chat can skip a broken provider without failing the entire turn;
 - `/assistant` can still work when headless auth fails;
-- `/vote` can require structured output instead of accepting plain text;
+- `/vote` requires structured sidecar votes instead of accepting plain text;
 - `/broadcast` can warn when falling back to full-permission commands;
 - cost/latency metrics can be grouped by intent and command class.
 

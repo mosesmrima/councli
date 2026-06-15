@@ -441,8 +441,9 @@ Use existing standards and tools where they fit:
   `kimi --prompt {prompt}`.
 - `doctor --json` reports intent readiness, but most adapters still need safe
   default probes for auth/model/quota.
-- Shared-turn trailers are still text fallbacks; response sidecars need stricter
-  validation before every machine decision.
+- Shared-turn trailers are still text fallbacks. `/vote` decisions now require
+  valid response sidecars; review, executor selection, and apply need the same
+  stricter validation.
 
 ## Production readiness gates
 
@@ -454,9 +455,9 @@ Treat the system as not production-grade until these gates pass:
    fallback is configured.
 4. Binary path drift after trust is detected; version/hash drift is a remaining
    hardening step.
-5. Participant response sidecars are emitted and validated before every machine
-   decision.
-6. Machine decisions reject missing or invalid sidecars.
+5. Participant response sidecars are emitted and validated before every
+   remaining machine decision.
+6. Review, executor selection, and apply reject missing or invalid sidecars.
 7. Run event writes use cross-process `fcntl.flock`.
 8. `councli verify` and `runs recover` can rebuild projections and detect missing
    refs.
@@ -473,7 +474,8 @@ Treat the system as not production-grade until these gates pass:
 3. Add intent-specific readiness model and `doctor --json`.
 4. Add response sidecars for shared turns while retaining `COUNCLI_TRAILER` as
    fallback.
-5. Validate sidecars before `/vote`, review, and apply decisions.
+5. Extend sidecar validation from `/vote` to review, executor selection, and
+   apply decisions.
 6. Add run-local `fcntl.flock` around `EventLedger` appends and projections.
 7. Add normalized failure classification.
 8. Add binary version/hash trust drift checks.
