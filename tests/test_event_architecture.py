@@ -1906,6 +1906,36 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertNotEqual(blocked_transport.returncode, 0)
             self.assertIn("trusted agent fields changed", blocked_transport.stdout + blocked_transport.stderr)
 
+    def test_trust_dry_run_reports_command_diff_without_accepting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            config_path = project_config_path(root)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            raw["agents"]["alpha"]["command"] = [PYTHON, "-c", "print('changed')", "{prompt}"]
+            config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+            preview = subprocess.run(
+                [PYTHON, "-m", "councli", "trust", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+            self.assertIn("councli trust preview", preview.stdout)
+            self.assertIn("agents.alpha.command: changed", preview.stdout)
+            self.assertIn("Run `councli trust` without --dry-run", preview.stdout)
+
+            blocked = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("trusted agent fields changed", blocked.stdout + blocked.stderr)
+
     def test_prompt_placeholder_must_be_standalone_argv_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(tmp)

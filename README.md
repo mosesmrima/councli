@@ -140,7 +140,8 @@ backend, enabled flags, broadcast flags, session names, or tmux input settings,
 or if an installed assistant binary changes, review the file and run
 `councli trust` before running assistant commands again. If a project was
 intentionally moved or renamed, run `councli trust --repair-identity` after
-reviewing the config.
+reviewing the config. Use `councli trust --dry-run` to inspect command-field,
+binary, and hash changes before accepting the current config.
 
 Project-level fields include:
 

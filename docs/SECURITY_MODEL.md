@@ -90,6 +90,8 @@ Current controls:
 
 - command-bearing fields are hashed and pinned in user-local state;
 - config changes require `councli trust`;
+- `councli trust --dry-run` previews command/config field changes and binary
+  drift before rewriting the trust pin;
 - generated configs include `schema_version: councli.config.v1`;
 - `councli config check` and `councli config migrate` inspect and upgrade
   legacy configs without changing trusted command fields;
@@ -100,7 +102,6 @@ Current controls:
 
 Hardening:
 
-- make trust diffs inspectable before `councli trust`;
 - add optional sandbox wrapper policy;
 - add integration tests for hostile prompts and malicious configs.
 

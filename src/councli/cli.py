@@ -50,6 +50,7 @@ from councli.config import (
     config_schema_status,
     dump_yaml,
     executable_config_hash,
+    executable_config_payload,
     load_config as load_config_model,
     migrate_config_payload,
     project_config_path,
@@ -238,8 +239,17 @@ def trust(
         bool,
         typer.Option("--repair-identity", help="Accept the current path after an intentional project move/rename."),
     ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview trust changes without writing the trust pin.")] = False,
 ) -> None:
     """Trust assistant command and transport fields in the project-local councli config."""
+    if dry_run:
+        try:
+            report = build_trust_preview_report(root)
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(code=2) from exc
+        print_trust_preview_report(report)
+        return
     try:
         path, digest = trust_project_config(root, reason="manual", repair_identity=repair_identity)
     except (ProjectIdentityError, FileNotFoundError, ValueError) as exc:
@@ -250,6 +260,122 @@ def trust(
     console.print(f"Hash: {digest}")
     if gitignore is not None:
         console.print(f"[green]Protected local artifacts:[/] {gitignore}")
+
+
+def build_trust_preview_report(root: Path) -> dict[str, Any]:
+    raw = read_config_raw(root)
+    try:
+        CouncliConfig.model_validate(raw)
+    except Exception as exc:
+        raise ValueError(f"Invalid config at {project_config_path(root)}:\n{exc}") from exc
+    current_hash = executable_config_hash(raw)
+    current_payload = executable_config_payload(raw)
+    current_binaries = resolved_agent_binaries(raw, include_versions=True)
+    trust_path = project_trust_path(root)
+    trusted_hash: str | None = None
+    trusted_payload: dict[str, Any] | None = None
+    trusted_binaries: dict[str, Any] = {}
+    trust_status = "missing"
+    trust_error: str | None = None
+    try:
+        trust = json.loads(trust_path.read_text(encoding="utf-8"))
+        if not isinstance(trust, dict):
+            raise ValueError("trust file is not a JSON object")
+        trust_config = trust.get("config") if isinstance(trust.get("config"), dict) else {}
+        trusted_hash = trust_config.get("executable_hash") if isinstance(trust_config.get("executable_hash"), str) else None
+        raw_payload = trust_config.get("executable_payload")
+        trusted_payload = raw_payload if isinstance(raw_payload, dict) else None
+        raw_binaries = trust_config.get("binaries")
+        trusted_binaries = raw_binaries if isinstance(raw_binaries, dict) else {}
+        trust_status = "trusted" if trusted_hash == current_hash else "changed"
+    except FileNotFoundError:
+        trust_status = "missing"
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        trust_status = "invalid"
+        trust_error = str(exc)
+    binary_diffs = diff_trusted_binaries(trusted_binaries, current_binaries)
+    if trust_status == "trusted" and binary_diffs:
+        trust_status = "binary_changed"
+    return {
+        "trust_path": str(trust_path),
+        "config_path": str(project_config_path(root)),
+        "status": trust_status,
+        "error": trust_error,
+        "trusted_hash": trusted_hash,
+        "current_hash": current_hash,
+        "hash_changed": trusted_hash != current_hash,
+        "config_diffs": (
+            diff_value_paths(trusted_payload, current_payload)
+            if trusted_payload is not None
+            else []
+        ),
+        "config_diff_available": trusted_payload is not None,
+        "binary_diffs": binary_diffs,
+    }
+
+
+def print_trust_preview_report(report: dict[str, Any]) -> None:
+    status = report["status"]
+    style = "green" if status == "trusted" else "yellow"
+    if status in {"missing", "invalid"}:
+        style = "red" if status == "invalid" else "yellow"
+    console.print("[bold]councli trust preview[/]")
+    console.print(f"Config: {report['config_path']}")
+    console.print(f"Trust:  {report['trust_path']}")
+    console.print(f"Status: [{style}]{status}[/]")
+    if report.get("error"):
+        console.print(f"[red]Trust error:[/] {report['error']}")
+    console.print(f"Current hash: {short_hash(report['current_hash'])}")
+    console.print(f"Trusted hash: {short_hash(report.get('trusted_hash'))}")
+    if not report["config_diff_available"] and status != "missing":
+        console.print("[yellow]Config field diff unavailable:[/] trust pin predates executable payload metadata.")
+    if report["config_diffs"]:
+        console.print("[bold]Command/config field changes:[/]")
+        for item in report["config_diffs"]:
+            console.print(f"- {item}")
+    if report["binary_diffs"]:
+        console.print("[bold]Binary changes:[/]")
+        for item in report["binary_diffs"]:
+            console.print(f"- {item}")
+    if not report["config_diffs"] and not report["binary_diffs"]:
+        console.print("[green]No command-field or binary changes detected.[/]")
+    console.print("[dim]Run `councli trust` without --dry-run to accept the current config.[/]")
+
+
+def diff_value_paths(before: Any, after: Any, *, prefix: str = "") -> list[str]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        paths: list[str] = []
+        for key in sorted(set(before) | set(after)):
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            if key not in before:
+                paths.append(f"{child_prefix}: added")
+            elif key not in after:
+                paths.append(f"{child_prefix}: removed")
+            else:
+                paths.extend(diff_value_paths(before[key], after[key], prefix=child_prefix))
+        return paths
+    if before != after:
+        return [f"{prefix}: changed"]
+    return []
+
+
+def diff_trusted_binaries(trusted: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    diffs: list[str] = []
+    for name in sorted(set(trusted) | set(current)):
+        before = trusted.get(name) if isinstance(trusted.get(name), dict) else {}
+        after = current.get(name) if isinstance(current.get(name), dict) else {}
+        if not before:
+            diffs.append(f"{name}: added")
+            continue
+        if not after:
+            diffs.append(f"{name}: removed")
+            continue
+        for key in ("path", "sha256", "version", "version_status"):
+            if key != "path" and before.get(key) is None:
+                continue
+            if before.get(key) != after.get(key):
+                diffs.append(f"{name}.{key}: changed")
+    return diffs
 
 
 @config_app.command("check")

@@ -489,6 +489,7 @@ def trust_project_config(
         "config": {
             "path": str(path.resolve()),
             "executable_hash": digest,
+            "executable_payload": executable_config_payload(raw),
             "executable_fields": list(EXECUTABLE_AGENT_FIELDS),
             "native_fields": list(TRUSTED_NATIVE_FIELDS),
             "binaries": resolved_agent_binaries(raw, include_versions=True),
