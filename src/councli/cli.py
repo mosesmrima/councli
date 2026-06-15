@@ -511,6 +511,7 @@ def doctor(
             },
             "read_only_policy": runner.config.read_only_policy,
             "broadcast_policy": runner.config.broadcast_policy,
+            "sandbox_wrapper": runner.config.sandbox_wrapper,
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,
@@ -743,6 +744,7 @@ def build_security_agent_record(
         "command_capabilities": command_capabilities,
         "read_only_policy": read_only_policy,
         "broadcast_policy": broadcast_policy,
+        "sandbox_wrapper": validated_agent.sandbox_wrapper if validated_agent is not None else raw_agent.get("sandbox_wrapper"),
         "elevated_surfaces": elevated,
     }
 
@@ -2713,6 +2715,7 @@ def build_participants_artifact(
             },
             "read_only_policy": runner.config.read_only_policy,
             "broadcast_policy": runner.config.broadcast_policy,
+            "sandbox_wrapper": runner.config.sandbox_wrapper,
             "version": health.version,
             "version_status": health.version_status,
             "readiness_status": health.readiness_status,

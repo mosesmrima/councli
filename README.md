@@ -174,6 +174,9 @@ Each agent has:
 - `readiness_command`: optional bounded, non-mutating probe for auth/model/quota
   readiness. Nonzero output is classified into statuses such as
   `auth_required`, `model_unconfigured`, or `quota_unavailable` when possible.
+- `sandbox_wrapper`: optional argv prefix for exec-mode prompt commands, such
+  as a local `bwrap`, `firejail`, or `systemd-run` wrapper. It is prepended to
+  the rendered assistant command and is a trusted command-bearing field.
 - `probe_timeout_seconds`: timeout for version/probe commands.
 - `readiness_timeout_seconds`: timeout for the readiness probe.
 - `command`: argv template. For `exec`, `{prompt}` is replaced with the generated prompt.

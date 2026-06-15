@@ -499,4 +499,6 @@ Treat the system as not production-grade until these gates pass:
 11. Add retention/redaction and optional metrics export. Artifact scrub/prune
     and redacted support-bundle export are in place; `councli metrics` now
     provides local JSON and OpenMetrics-style export from existing event logs.
-12. Add SQLite WAL index only after the artifact protocol is stable.
+12. Optional sandbox wrapper policy is in place for exec-mode prompt commands
+    through trusted `sandbox_wrapper` argv prefixes.
+13. Add SQLite WAL index only after the artifact protocol is stable.

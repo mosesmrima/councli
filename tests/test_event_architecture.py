@@ -817,6 +817,55 @@ class EventArchitectureTests(unittest.TestCase):
         )
         self.assertEqual(shared_turn_runner(explicit_policy, intent_name="chat").config.command, explicit_policy.config.command)
 
+    def test_exec_sandbox_wrapper_prepends_child_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "wrapper.json"
+            wrapper = Path(tmp) / "wrapper.py"
+            wrapper.write_text(
+                "import json, pathlib, subprocess, sys\n"
+                f"log = pathlib.Path({str(log_path)!r})\n"
+                "log.write_text(json.dumps(sys.argv[1:]))\n"
+                "proc = subprocess.run(sys.argv[1:], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n"
+                "print(proc.stdout, end='')\n"
+                "print(proc.stderr, file=sys.stderr, end='')\n"
+                "raise SystemExit(proc.returncode)\n",
+                encoding="utf-8",
+            )
+            runner = AgentRunner(
+                "wrapped",
+                AgentConfig(
+                    backend="exec",
+                    binary=PYTHON,
+                    command=[PYTHON, "-c", "import sys; print('child ' + sys.argv[1])", "{prompt}"],
+                    sandbox_wrapper=[PYTHON, str(wrapper)],
+                ),
+            )
+
+            result = runner.run("hello", cwd=Path(tmp))
+
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.output, "child hello")
+            self.assertEqual(result.command[:2], [PYTHON, str(wrapper)])
+            wrapped_argv = json.loads(log_path.read_text(encoding="utf-8"))
+            self.assertEqual(wrapped_argv[:2], [PYTHON, "-c"])
+            self.assertEqual(wrapped_argv[-1], "hello")
+
+    def test_missing_sandbox_wrapper_makes_agent_unavailable(self) -> None:
+        runner = AgentRunner(
+            "missing-wrapper",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('unused')", "{prompt}"],
+                sandbox_wrapper=["definitely-missing-councli-wrapper"],
+            ),
+        )
+
+        health = runner.health()
+
+        self.assertFalse(health.available)
+        self.assertIn("sandbox wrapper not found", health.reason)
+
     def test_review_parser_and_decision_helpers(self) -> None:
         def valid_review(verdict: str, *, confidence: float = 0.9, concerns: list[str] | None = None) -> dict:
             return {

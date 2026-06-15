@@ -34,6 +34,7 @@ EXECUTABLE_AGENT_FIELDS = (
     "broadcast_policy",
     "version_command",
     "readiness_command",
+    "sandbox_wrapper",
     "probe_timeout_seconds",
     "readiness_timeout_seconds",
     "command",
@@ -104,6 +105,7 @@ class AgentConfig(BaseModel):
     broadcast_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
     version_command: list[str] | None = None
     readiness_command: list[str] | None = None
+    sandbox_wrapper: list[str] | None = None
     probe_timeout_seconds: int = Field(default=3, ge=1, le=30)
     readiness_timeout_seconds: int = Field(default=10, ge=1, le=120)
     command: list[str]
@@ -136,6 +138,19 @@ class AgentConfig(BaseModel):
     def validate_probe_command(cls, value: list[str] | None) -> list[str] | None:
         if value is not None and any("{prompt}" in part for part in value):
             raise ValueError("probe commands must not contain {prompt}")
+        return value
+
+    @field_validator("sandbox_wrapper")
+    @classmethod
+    def validate_sandbox_wrapper(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("sandbox_wrapper must not be empty")
+        if value[0].startswith("-"):
+            raise ValueError("sandbox_wrapper first token must be an executable")
+        if any("{prompt}" in part for part in value):
+            raise ValueError("sandbox_wrapper must not contain {prompt}")
         return value
 
     @field_validator(

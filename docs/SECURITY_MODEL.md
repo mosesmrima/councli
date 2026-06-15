@@ -102,7 +102,6 @@ Current controls:
 
 Hardening:
 
-- add optional sandbox wrapper policy;
 - add integration tests for hostile prompts and malicious configs.
 
 ### Command injection and shell interpretation
@@ -306,7 +305,10 @@ Current isolation:
 - subprocess timeouts;
 - cwd control;
 - git worktrees for implementation;
-- tmux session scoping.
+- tmux session scoping;
+- optional `sandbox_wrapper` argv prefix for exec-mode prompt commands. The
+  wrapper is trusted config, checked for binary presence in `health()`, and
+  prepended without shell interpretation.
 
 Optional stronger primitives:
 

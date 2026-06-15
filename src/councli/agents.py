@@ -115,6 +115,21 @@ class AgentRunner:
                 backend=self.config.backend,
                 version_status="missing_binary",
             )
+        if self.config.sandbox_wrapper:
+            wrapper_path = shutil.which(self.config.sandbox_wrapper[0])
+            if not wrapper_path:
+                return AgentHealth(
+                    name=self.name,
+                    enabled=True,
+                    binary=self.config.binary,
+                    path=path,
+                    available=False,
+                    reason=f"sandbox wrapper not found on PATH: {self.config.sandbox_wrapper[0]}",
+                    backend=self.config.backend,
+                    version_status="not_checked",
+                    readiness_status="launch_failed",
+                    readiness_detail=f"sandbox wrapper not found on PATH: {self.config.sandbox_wrapper[0]}",
+                )
         version, version_status = self.probe_version(path)
         ready, readiness_status, readiness_detail = self.probe_readiness(path)
         return AgentHealth(
@@ -188,7 +203,10 @@ class AgentRunner:
         return proc, "ok"
 
     def render_command(self, prompt: str) -> list[str]:
-        return [part.replace("{prompt}", prompt) for part in self.config.command]
+        command = [part.replace("{prompt}", prompt) for part in self.config.command]
+        if self.config.sandbox_wrapper:
+            return [*self.config.sandbox_wrapper, *command]
+        return command
 
     def run(
         self,
