@@ -14,6 +14,16 @@ environment and exposes the `councli` shell command on your `PATH`.
 - `tmux` is optional. It is needed for native attach/session features, not for
   basic non-interactive council turns.
 
+## Install from PyPI
+
+The PyPI distribution is `councli-ai`; the installed shell command is
+`councli`.
+
+```bash
+pipx install councli-ai
+councli --help
+```
+
 ## Install from GitHub
 
 ```bash
@@ -24,13 +34,13 @@ councli --help
 Upgrade:
 
 ```bash
-pipx upgrade councli
+pipx upgrade councli-ai
 ```
 
 Uninstall:
 
 ```bash
-pipx uninstall councli
+pipx uninstall councli-ai
 ```
 
 ## Install from a local checkout
@@ -80,7 +90,7 @@ brew install tmux
 Then install `councli`:
 
 ```bash
-pipx install "git+https://github.com/mosesmrima/councli.git"
+pipx install councli-ai
 ```
 
 The `tmux` step is optional unless you want native assistant sessions through
@@ -115,7 +125,7 @@ Inside WSL:
 sudo apt update
 sudo apt install python3 python3-pip pipx tmux
 pipx ensurepath
-pipx install "git+https://github.com/mosesmrima/councli.git"
+pipx install councli-ai
 ```
 
 Install and authenticate assistant CLIs inside WSL as well; Windows-installed

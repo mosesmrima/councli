@@ -45,7 +45,17 @@ authenticated, configured, and on `PATH` in the same shell.
 
 ## Install
 
-Recommended install from GitHub:
+Recommended install from PyPI:
+
+```bash
+pipx install councli-ai
+councli --help
+```
+
+The PyPI distribution is `councli-ai`; the installed shell command is
+`councli`.
+
+Install from GitHub:
 
 ```bash
 pipx install "git+https://github.com/mosesmrima/councli.git"

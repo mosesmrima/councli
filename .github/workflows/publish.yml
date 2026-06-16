@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/councli
+      url: https://pypi.org/p/councli-ai
     permissions:
       contents: read
       id-token: write
