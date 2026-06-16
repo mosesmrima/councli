@@ -41,8 +41,9 @@ broader systems-level design review, see
 protocol, state machine, sidecar schemas, and locking rules, see
 [`docs/PROTOCOL_DESIGN.md`](docs/PROTOCOL_DESIGN.md). For command trust,
 artifact secrecy, yolo/full-permission risk, and hardening gates, see
-[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md). For lifecycle,
-cancellation, cleanup, retention, and observability, see
+[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md). For upgrade and release
+security steps, see [`docs/SECURITY_MIGRATIONS.md`](docs/SECURITY_MIGRATIONS.md).
+For lifecycle, cancellation, cleanup, retention, and observability, see
 [`docs/OPERATIONS_MODEL.md`](docs/OPERATIONS_MODEL.md). For tmux, PTY, TUI,
 agent launch modes, and why terminal capture is not the collaboration protocol,
 see [`docs/TERMINAL_SUBSTRATE.md`](docs/TERMINAL_SUBSTRATE.md). For adapter

@@ -6,7 +6,8 @@ different from a normal library or service: the primary risk is not only bugs in
 read files, run tools, and sometimes write code with yolo/full-permission modes.
 
 This document defines the trust boundaries, threat model, current controls, and
-hardening path.
+hardening path. Versioned upgrade and release steps live in
+`SECURITY_MIGRATIONS.md`.
 
 Adapter capability and launch-readiness semantics are defined in
 `ADAPTER_CONTRACT.md`; this document focuses on the resulting trust and threat
@@ -372,12 +373,16 @@ Acceptable for a personal local utility:
 
 Not yet acceptable for shared/team/production use:
 
-- no structured secret redaction;
-- no adapter capability policy;
-- no stable binary version drift report beyond executable hash drift detection;
-- no stable security audit report;
-- no sandbox wrapper policy;
-- no formal schema for participant responses.
+- adapter-specific auth/model/quota probes still depend on each CLI exposing a
+  safe diagnostic command;
+- response sidecars exist for shared turns, but richer payload-specific schemas
+  should keep expanding before machine decisions are treated as stable API;
+- cost, output-byte, latency, and disk budgets are still local metrics rather
+  than enforceable limits;
+- cancellation and recovery coverage should keep expanding across every
+  foreground command and future background mode;
+- hostile-input tests cover current exec paths, but new transports and command
+  fields need equivalent coverage as they are added.
 
 ## Hardening roadmap
 
@@ -395,7 +400,9 @@ Not yet acceptable for shared/team/production use:
 8. Add optional sandbox wrappers.
 9. Keep expanding integration tests for hostile prompts and malicious configs
    as new adapter transports and command fields are added.
-10. Add a versioned security migration guide before any public release.
+10. Add a versioned security migration guide before any public release. Done in
+    `SECURITY_MIGRATIONS.md`; keep it updated with every config, trust, schema,
+    artifact, or cleanup migration.
 
 ## Research references
 
