@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from councli.agents import AgentRunResult, AgentRunner, cancel_active_agent_processes
 from councli.cli import (
@@ -865,6 +866,64 @@ class EventArchitectureTests(unittest.TestCase):
 
         self.assertFalse(health.available)
         self.assertIn("sandbox wrapper not found", health.reason)
+
+    def test_exec_prompt_shell_metacharacters_are_passed_as_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "owned"
+            marker_two = root / "owned-two"
+            log_path = root / "argv.json"
+            script = root / "record_prompt.py"
+            script.write_text(
+                "import json, pathlib, sys\n"
+                f"pathlib.Path({str(log_path)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                "print('ok')\n",
+                encoding="utf-8",
+            )
+            prompt = (
+                f"--pretend-option; touch {marker}; "
+                f"$(touch {marker_two}) `touch {marker_two}`\n"
+                "'quoted value' && echo unsafe"
+            )
+            runner = AgentRunner(
+                "safe-argv",
+                AgentConfig(
+                    backend="exec",
+                    binary=PYTHON,
+                    command=[PYTHON, str(script), "{prompt}"],
+                ),
+            )
+
+            result = runner.run(prompt, cwd=root)
+
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.output, "ok")
+            self.assertFalse(marker.exists())
+            self.assertFalse(marker_two.exists())
+            self.assertEqual(json.loads(log_path.read_text(encoding="utf-8")), [prompt])
+
+    def test_malicious_prompt_bearing_config_fields_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "sandbox_wrapper must not contain"):
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('ok')", "{prompt}"],
+                sandbox_wrapper=[PYTHON, "{prompt}"],
+            )
+        with self.assertRaisesRegex(ValidationError, "sandbox_wrapper first token"):
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('ok')", "{prompt}"],
+                sandbox_wrapper=["--unsafe-wrapper-flag"],
+            )
+        with self.assertRaisesRegex(ValidationError, "probe commands must not contain"):
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('ok')", "{prompt}"],
+                readiness_command=[PYTHON, "-c", "print({prompt})"],
+            )
 
     def test_review_parser_and_decision_helpers(self) -> None:
         def valid_review(verdict: str, *, confidence: float = 0.9, concerns: list[str] | None = None) -> dict:

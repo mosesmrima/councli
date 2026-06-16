@@ -98,11 +98,14 @@ Current controls:
 - project identity detects copied/moved `.councli/` directories;
 - tmux socket/session names and detach keys are validated;
 - argv arrays are used instead of shell-string command templates in the main
-  `exec` path.
+  `exec` path;
+- regression tests cover shell metacharacters in prompt text and malicious
+  prompt-bearing config fields for exec commands, probes, and sandbox wrappers.
 
 Hardening:
 
-- add integration tests for hostile prompts and malicious configs.
+- broaden hostile-input coverage as new adapter transports and command fields
+  are added.
 
 ### Command injection and shell interpretation
 
@@ -117,6 +120,9 @@ Current controls:
 
 - normal `exec` uses argv lists and `subprocess.run(..., shell=False)`;
 - `{prompt}` replacement occurs as one argv element when templates are correct;
+- command validation rejects `{prompt}` embedded inside a larger argv token;
+- probe commands reject `{prompt}` entirely;
+- `sandbox_wrapper` rejects `{prompt}` and option-like executable positions;
 - tmux control arguments are passed as argv to the `tmux` binary;
 - tmux names and keys are constrained.
 
@@ -124,7 +130,6 @@ Gaps:
 
 - tmux `new-session` ultimately starts a shell command string, built from a
   quoted argv list;
-- there is no explicit validation that `{prompt}` is its own argv element;
 - assistant CLIs may interpret prompt text in tool-specific ways.
 
 Hardening:
@@ -388,7 +393,8 @@ Not yet acceptable for shared/team/production use:
 6. Make cancellation events consistent across all foreground commands.
 7. Add `councli scrub` and redacted export.
 8. Add optional sandbox wrappers.
-9. Add integration tests for hostile prompts and malicious configs.
+9. Keep expanding integration tests for hostile prompts and malicious configs
+   as new adapter transports and command fields are added.
 10. Add a versioned security migration guide before any public release.
 
 ## Research references
