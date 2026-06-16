@@ -15,10 +15,13 @@ from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
+from prompt_toolkit.document import Document
 
 from councli.agents import AgentRunResult, AgentRunner, cancel_active_agent_processes
 from councli.cli import (
+    SlashCommandCompleter,
     broadcast_runner,
+    canonical_chat_command,
     decide_shared_vote,
     extract_vote_options,
     implementation_runner,
@@ -576,6 +579,26 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertTrue(result.skipped)
             self.assertEqual(result.failure_class, "model_unconfigured")
             self.assertIn("readiness probe failed", result.error)
+
+    def test_agent_probes_do_not_consume_councli_stdin(self) -> None:
+        runner = AgentRunner(
+            "probe",
+            AgentConfig(
+                backend="exec",
+                binary=PYTHON,
+                command=[PYTHON, "-c", "print('unused')", "{prompt}"],
+                readiness_command=[
+                    PYTHON,
+                    "-c",
+                    "import sys; raise SystemExit(7 if sys.stdin.read(1) else 0)",
+                ],
+            ),
+        )
+
+        health = runner.health()
+
+        self.assertTrue(health.available, health.reason)
+        self.assertEqual(health.readiness_status, "ok")
 
     def test_council_dry_run_writes_event_spine_and_plan_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1532,7 +1555,7 @@ class EventArchitectureTests(unittest.TestCase):
             proc = subprocess.run(
                 [PYTHON, "-m", "councli", "chat", "-C", str(root), "--dry-run"],
                 cwd=REPO_ROOT,
-                input="/status\n/not-a-command\nmake a tiny plan\n//literal slash task\n/show latest\n/quit\n",
+                input="/help\n/status\n/not-a-command\nmake a tiny plan\n//literal slash task\n/show latest\n/quit\n",
                 text=True,
                 capture_output=True,
                 check=False,
@@ -1540,6 +1563,7 @@ class EventArchitectureTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             self.assertIn("councli interactive", proc.stdout)
+            self.assertIn("/show [run|latest] [--blackboard]", proc.stdout)
             self.assertIn("Unknown councli command", proc.stdout)
             self.assertIn("Responses", proc.stdout)
             self.assertIn("Councli", proc.stdout)
@@ -1552,6 +1576,53 @@ class EventArchitectureTests(unittest.TestCase):
             ]
             self.assertIn("make a tiny plan", tasks)
             self.assertIn("/literal slash task", tasks)
+
+    def test_cli_chat_can_enable_and_disable_configured_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            proc = subprocess.run(
+                [PYTHON, "-m", "councli", "chat", "-C", str(root), "--dry-run"],
+                cwd=REPO_ROOT,
+                input="/disable alpha\n/enable alpha\n/agents\n/quit\n",
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            self.assertIn("alpha disabled", proc.stdout)
+            self.assertIn("alpha enabled", proc.stdout)
+            self.assertIn("Config:", proc.stdout)
+            raw = yaml.safe_load(project_config_path(root).read_text(encoding="utf-8"))
+            self.assertTrue(raw["agents"]["alpha"]["enabled"])
+
+            doctor = subprocess.run(
+                [PYTHON, "-m", "councli", "doctor", "-C", str(root)],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+
+    def test_slash_command_completer_suggests_commands_and_agent_arguments(self) -> None:
+        runners = {
+            "alpha": AgentRunner("alpha", AgentConfig(binary="alpha", command=["alpha", "{prompt}"])),
+            "beta": AgentRunner("beta", AgentConfig(binary="beta", command=["beta", "{prompt}"])),
+        }
+        completer = SlashCommandCompleter(runners)
+
+        command_suggestions = [item.text for item in completer.get_completions(Document("/ass"), None)]
+        agent_suggestions = [item.text for item in completer.get_completions(Document("/assistant a"), None)]
+        synthesizer_suggestions = [item.text for item in completer.get_completions(Document("/synthesizer "), None)]
+        enable_suggestions = [item.text for item in completer.get_completions(Document("/enable cl"), None)]
+
+        self.assertIn("/assistant", command_suggestions)
+        self.assertEqual(canonical_chat_command("/agent"), "/assistant")
+        self.assertIn("alpha", agent_suggestions)
+        self.assertIn("auto", synthesizer_suggestions)
+        self.assertIn("beta", synthesizer_suggestions)
+        self.assertIn("claude", enable_suggestions)
 
     def test_bare_cli_opens_control_plane_and_streams_visible_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

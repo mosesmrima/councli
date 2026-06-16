@@ -191,6 +191,7 @@ class AgentRunner:
             proc = subprocess.run(
                 resolved_command,
                 text=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=timeout_seconds,

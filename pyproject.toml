@@ -5,11 +5,37 @@ build-backend = "hatchling.build"
 [project]
 name = "councli"
 version = "0.1.0"
-description = "A local consensus layer for multiple coding CLI agents."
+description = "A local council room for coordinating multiple coding agent CLIs."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "councli contributors" },
+]
+keywords = [
+  "ai",
+  "agents",
+  "cli",
+  "coding-assistant",
+  "coordination",
+  "terminal",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
+  "Topic :: Terminals",
+]
 dependencies = [
   "jinja2>=3.1.0",
+  "prompt-toolkit>=3.0.52",
   "pydantic>=2.7.0",
   "pyyaml>=6.0.0",
   "rich>=13.7.0",
@@ -18,6 +44,23 @@ dependencies = [
 
 [project.scripts]
 councli = "councli.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/mosesmrima/councli"
+Repository = "https://github.com/mosesmrima/councli"
+Issues = "https://github.com/mosesmrima/councli/issues"
+Documentation = "https://github.com/mosesmrima/councli/tree/main/docs"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/docs",
+  "/README.md",
+  "/LICENSE",
+  "/CONTRIBUTING.md",
+  "/pyproject.toml",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/councli"]

@@ -1,134 +1,124 @@
 # councli
 
-`councli` is a small local utility for hosting multiple coding CLI assistants,
-recording their activity, and letting them collaborate through a shared
-blackboard while preserving their native CLI harnesses.
+`councli` is a local council room for multiple coding agent CLIs. It broadcasts
+prompts to installed assistants, records their responses on an inspectable
+blackboard, gives them shared visibility into each other's output, and returns a
+unified answer while preserving each assistant's native harness.
 
-The first version is intentionally simple:
+It is not a model provider, not a replacement for Claude Code/Codex/AGY/Kimi,
+and not a new tool sandbox. The assistants remain ordinary binaries on your
+machine; `councli` is the room, recorder, router, and coordination layer around
+them.
 
-- Linux-first.
-- File-based transcripts under `.councli/runs/`.
-- Native assistant sessions under a dedicated `tmux -L councli` server.
-- Project-level session ledger under `.councli/ledger/`.
-- Project-scoped tmux session names to avoid cross-repo collisions.
-- Raw terminal recording rotation and `.councli/` gitignore protection.
-- Modular agent adapters through YAML config.
-- Graceful degradation when an agent is missing or not authenticated.
-- Shared conversation turns by default, with explicit `/deliberate` and `/vote`
-  commands for stronger coordination.
-- Packet-file prompts, response sidecars, run-local locks, and blackboard
-  projections for inspectable collaboration.
-- Packaged JSON Schemas under `councli.schemas` for protocol artifacts.
-- Security reporting for trusted command fields, binary path/hash/version drift,
-  and elevated command surfaces.
-- Native attach mode: use each assistant's own TUI without `councli`
-  intercepting slash commands or permission prompts.
+## Features
+
+- Shared conversation turns by default.
+- Explicit `/deliberate` and `/vote` commands for stronger coordination.
+- Slash-command autocomplete, prompt history, and a terminal-friendly control
+  plane.
+- File-backed blackboards under `.councli/runs/`.
+- Packet-file prompts and response sidecars for inspectable collaboration.
+- Configurable participants for `codex`, `claude`, `agy`, `codewhale`, `kimi`,
+  and custom adapters.
+- `/enable <agent>`, `/disable <agent>`, and `/agents` for participant control.
+- Native attach mode for using an assistant's own TUI when `tmux` is available.
 - Read-only broadcast mode for comparing answers across assistants.
-- Experimental worktree execution remains hidden while the shared council
-  protocol is hardened.
+- Trust pins for command templates, binary paths, binary hashes, and elevated
+  command surfaces.
+- Packaged JSON Schemas under `councli.schemas` for protocol artifacts.
+- Graceful degradation when an assistant is missing, disabled, unauthenticated,
+  or missing a configured model.
 
-For the consolidated research findings and implementation handoff, see
-[`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md) first; it is the
-canonical implementation reference. For the latest external MVP consultation
-from Claude Fable 5, see
-[`docs/FABLE_MVP_CONSULT.md`](docs/FABLE_MVP_CONSULT.md). For the detailed binary launch, adapter
-readiness, and communication protocol research, see
-[`docs/AGENT_LAUNCH_PROTOCOL.md`](docs/AGENT_LAUNCH_PROTOCOL.md). For the
-explicit tradeoff analysis and rejected alternatives, see
-[`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md). For the
-broader systems-level design review, see
-[`docs/SYSTEMS_REVIEW.md`](docs/SYSTEMS_REVIEW.md). For the target shared-turn
-protocol, state machine, sidecar schemas, and locking rules, see
-[`docs/PROTOCOL_DESIGN.md`](docs/PROTOCOL_DESIGN.md). For command trust,
-artifact secrecy, yolo/full-permission risk, and hardening gates, see
-[`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md). For upgrade and release
-security steps, see [`docs/SECURITY_MIGRATIONS.md`](docs/SECURITY_MIGRATIONS.md).
-For lifecycle, cancellation, cleanup, retention, and observability, see
-[`docs/OPERATIONS_MODEL.md`](docs/OPERATIONS_MODEL.md). For tmux, PTY, TUI,
-agent launch modes, and why terminal capture is not the collaboration protocol,
-see [`docs/TERMINAL_SUBSTRATE.md`](docs/TERMINAL_SUBSTRATE.md). For adapter
-readiness, capability-aware routing, launch states, and response sidecars, see
-[`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md). For run events,
-blackboard projection, locking, crash recovery, and indexing, see
-[`docs/STATE_CONCURRENCY.md`](docs/STATE_CONCURRENCY.md).
+## Platform support
 
-## Install as a shell command
+`councli` is a pure Python CLI for Python 3.11+.
 
-`councli` is packaged as a normal Python CLI. The recommended user install path
-is `pipx`, because it creates an isolated environment and puts the `councli`
-command on your shell `PATH`.
+| Platform | Install | Core council turns | Native tmux attach |
+| --- | --- | --- | --- |
+| Linux | Supported | Supported | Supported with `tmux` |
+| macOS | Supported | Supported | Supported with `tmux` |
+| Windows | Supported | Supported with exec-mode agents | Use WSL for tmux |
+| WSL | Supported | Supported | Supported with `tmux` |
 
-From a local checkout:
+Assistant availability depends on whether that assistant CLI is installed,
+authenticated, configured, and on `PATH` in the same shell.
+
+## Install
+
+Recommended install from GitHub:
 
 ```bash
-python3 -m pip install --user pipx
-python3 -m pipx ensurepath
-pipx install /path/to/councli
-councli doctor
+pipx install "git+https://github.com/mosesmrima/councli.git"
+councli --help
 ```
 
-From a published Git repository:
+Install from a local checkout:
 
 ```bash
-pipx install "git+https://github.com/<owner>/<repo>.git"
-councli doctor
-```
-
-Requirements:
-
-- Python 3.11 or newer.
-- `tmux` for native interactive assistant sessions.
-- Any assistant CLI you want to use, such as `codex`, `claude`, `agy`, `kimi`,
-  or `codewhale`. Missing assistants do not block the rest.
-
-On first `councli doctor` or `councli chat` in a project, councli creates
-`.councli/config.yaml`, trusts the generated command templates, protects local
-artifacts in `.councli/.gitignore`, and checks which configured assistant
-binaries are on `PATH`.
-
-You can run the same first-run setup explicitly with:
-
-```bash
-councli setup
-```
-
-If you want the generated config to disable tools that are not installed yet:
-
-```bash
-councli init --disable-missing
-```
-
-If you install a missing assistant later, either flip its `enabled` field back
-to `true` and run `councli trust`, or regenerate the defaults with:
-
-```bash
-councli init --force
-```
-
-## Install for local development
-
-```bash
+git clone https://github.com/mosesmrima/councli.git
 cd councli
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e .
+pipx install .
+councli --help
 ```
 
-## Start
+For Linux, macOS, Windows, WSL, shell completion, upgrade, and troubleshooting
+details, see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## Quick start
+
+From the project you want the assistants to inspect:
 
 ```bash
-councli doctor
-councli doctor --json
 councli setup
-councli chat
-councli init --disable-missing
-councli trust
-councli sessions attach codex
-councli broadcast "Compare the API design"
-councli brief "Context to share with assistants"
-councli status
-councli show latest
+councli doctor
+councli
 ```
+
+Inside the interactive shell:
+
+```text
+/agents
+/enable claude
+what can you all do?
+/deliberate compare sqlite and postgres for this app
+/vote choose the transport: exec, tmux
+/assistant codex
+/quit
+```
+
+Normal prompts run a shared conversation turn. Slash commands opt into stronger
+coordination or local control-plane actions.
+
+## Development
+
+```bash
+git clone https://github.com/mosesmrima/councli.git
+cd councli
+uv sync
+uv run pytest -q
+uv build
+```
+
+For contribution guidance, see [`CONTRIBUTING.md`](CONTRIBUTING.md). For build
+and release details, see [`docs/PACKAGING.md`](docs/PACKAGING.md).
+
+## Documentation map
+
+- [`docs/INSTALL.md`](docs/INSTALL.md): install on Linux, macOS, Windows, WSL.
+- [`docs/PACKAGING.md`](docs/PACKAGING.md): build, wheel checks, release steps.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): high-level design.
+- [`docs/PROTOCOL_DESIGN.md`](docs/PROTOCOL_DESIGN.md): shared-turn protocol,
+  state machine, sidecars, and locking rules.
+- [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md): command trust, artifact
+  secrecy, elevated command risk, and hardening gates.
+- [`docs/TERMINAL_SUBSTRATE.md`](docs/TERMINAL_SUBSTRATE.md): tmux, PTY, TUI,
+  native sessions, and terminal capture boundaries.
+- [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md): adapter readiness,
+  capability-aware routing, launch states, and response sidecars.
+- [`docs/STATE_CONCURRENCY.md`](docs/STATE_CONCURRENCY.md): events, blackboard
+  projection, locking, crash recovery, and indexing.
+- [`docs/RESEARCH_FINDINGS.md`](docs/RESEARCH_FINDINGS.md): consolidated
+  research findings and implementation handoff.
 
 ## Config
 
@@ -153,6 +143,9 @@ Project-level fields include:
 Each agent has:
 
 - `enabled`: whether to consider it.
+  Prefer `/enable <agent>` and `/disable <agent>` in the interactive shell for
+  normal toggles; those commands update the config, refresh trust, and reload
+  the current session.
 - `backend`: `exec` or `tmux`.
 - `binary`: executable name to find on `PATH`.
 - `display_name`: optional human-readable adapter name.
@@ -356,12 +349,15 @@ Use explicit commands when you want stronger coordination:
   them a peer-aware second round before synthesis.
 - `/vote <prompt>` asks for explicit votes and records a decision artifact.
 - `/assistant <name>` attaches to a native assistant session.
+- `/synthesizer <name>` chooses which assistant writes the unified answer.
+- `/agents`, `/enable <name>`, and `/disable <name>` manage participants.
 
-Local shell commands are `/help`, `/doctor`, `/status`, `/show`, `/sessions`,
-`/assistant <name>`, `/broadcast <prompt>`, `/brief [task]`, `/deliberate
-<task>`, `/vote <task>`, and `/quit`. Unknown `/`
-commands are rejected explicitly. To send a task that literally starts with `/`,
-prefix it as `//task`.
+Local shell commands include `/help`, `/doctor`, `/agents`, `/enable`,
+`/disable`, `/status`, `/show`, `/sessions`, `/assistant <name>`, `/broadcast
+<prompt>`, `/brief [task]`, `/synthesizer [name|auto|clear]`, `/deliberate
+<task>`, `/vote <task>`, and `/quit`. Unknown `/` commands are rejected
+explicitly. To send a task that literally starts with `/`, prefix it as
+`//task`.
 
 `/assistant codex` attaches your terminal to Codex's native tmux session. Codex
 owns the keyboard, slash commands, permission prompts, and UI exactly as if you
@@ -444,7 +440,8 @@ for development, but they are not the MVP path and require
 
 1. Keep improving adapter-specific readiness probes where each CLI exposes a
    richer safe diagnostic command.
-2. Add a richer interactive TUI once the protocol proves useful.
+2. Continue polishing the interactive prompt and consider a full-screen TUI
+   only after the protocol proves useful in normal terminals.
 3. Decide whether to delete or separately package the hidden execution/review
    prototype.
 

@@ -16,9 +16,17 @@ import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.styles import Style
 import typer
 import yaml
 from rich.console import Console
+from rich.live import Live
+from rich.markup import escape
+from rich.panel import Panel
 from rich.table import Table
 
 from councli.agents import (
@@ -46,6 +54,7 @@ from councli.config import (
     CONFIG_SCHEMA_VERSION,
     ConfigTrustError,
     CouncliConfig,
+    DEFAULT_CONFIG,
     ProjectIdentityError,
     config_schema_status,
     dump_yaml,
@@ -161,6 +170,55 @@ class WorktreeCandidate:
     reason: str
 
 
+@dataclass(frozen=True)
+class ChatCommandSpec:
+    name: str
+    usage: str
+    description: str
+    group: str = "General"
+    aliases: tuple[str, ...] = ()
+
+
+CHAT_COMMAND_SPECS: tuple[ChatCommandSpec, ...] = (
+    ChatCommandSpec("/help", "/help", "Show available councli commands.", "General"),
+    ChatCommandSpec("/doctor", "/doctor", "Check configured agent availability.", "General"),
+    ChatCommandSpec("/agents", "/agents", "Show current participants and enablement state.", "General"),
+    ChatCommandSpec("/status", "/status", "Show recent councli runs.", "General"),
+    ChatCommandSpec("/show", "/show [run|latest] [--blackboard]", "Show a run summary or blackboard.", "General"),
+    ChatCommandSpec("/sessions", "/sessions", "List native tmux-backed assistant sessions.", "General"),
+    ChatCommandSpec("/enable", "/enable <agent>", "Enable a configured or supported participant.", "Session"),
+    ChatCommandSpec("/disable", "/disable <agent>", "Disable a configured participant without deleting it.", "Session"),
+    ChatCommandSpec("/brief", "/brief [task]", "Print or create an inspectable task brief.", "Artifacts"),
+    ChatCommandSpec("/broadcast", "/broadcast <prompt>", "Send a read-only prompt to available assistants.", "Coordination"),
+    ChatCommandSpec("/deliberate", "/deliberate <prompt>", "Run peer-aware critique/revision before synthesis.", "Coordination"),
+    ChatCommandSpec("/vote", "/vote <prompt>: <option-a>, <option-b>", "Ask assistants to choose from closed options.", "Coordination"),
+    ChatCommandSpec("/council", "/council <prompt>", "Alias for /deliberate.", "Coordination"),
+    ChatCommandSpec("/synthesizer", "/synthesizer [name|auto|clear]", "Set or show the turn synthesizer.", "Session"),
+    ChatCommandSpec("/assistant", "/assistant <name> [instance]", "Attach to a native assistant session.", "Session", aliases=("/agent",)),
+    ChatCommandSpec("/quit", "/quit", "Exit the interactive shell.", "General", aliases=("/exit",)),
+)
+CHAT_COMMAND_BY_NAME = {spec.name: spec for spec in CHAT_COMMAND_SPECS}
+CHAT_COMMAND_ALIAS_TARGETS = {
+    alias: spec.name
+    for spec in CHAT_COMMAND_SPECS
+    for alias in spec.aliases
+}
+CHAT_PROMPT_STYLE = Style.from_dict(
+    {
+        "prompt": "ansicyan bold",
+        "prompt.symbol": "ansigreen bold",
+        "toolbar": "reverse",
+        "toolbar.label": "ansibrightblack",
+        "toolbar.value": "ansiwhite",
+        "toolbar.warn": "ansiyellow",
+        "completion-menu.completion": "bg:#1f1f1f #d7d7d7",
+        "completion-menu.completion.current": "bg:#005f5f #ffffff",
+        "completion-menu.meta.completion": "bg:#1f1f1f #8a8a8a",
+        "completion-menu.meta.completion.current": "bg:#005f5f #ffffff",
+    }
+)
+
+
 def print_mascot() -> None:
     console.print(COUNCLI_MASCOT, style="cyan")
 
@@ -181,6 +239,214 @@ def load_config(root: Path, *, auto_init: bool = False, quiet: bool = False):
     except (ConfigTrustError, ProjectIdentityError, ValueError) as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=2) from exc
+
+
+def canonical_chat_command(command: str) -> str:
+    value = command.strip().lower()
+    return CHAT_COMMAND_ALIAS_TARGETS.get(value, value)
+
+
+def chat_command_candidates() -> list[tuple[str, ChatCommandSpec]]:
+    candidates: list[tuple[str, ChatCommandSpec]] = []
+    for spec in CHAT_COMMAND_SPECS:
+        candidates.append((spec.name, spec))
+        for alias in spec.aliases:
+            candidates.append((alias, spec))
+    return candidates
+
+
+class SlashCommandCompleter(Completer):
+    def __init__(self, runners: dict[str, AgentRunner]) -> None:
+        self.runners = runners
+
+    def get_completions(self, document, complete_event):  # type: ignore[override]
+        before = document.text_before_cursor
+        if not before.startswith("/"):
+            return
+        stripped = before.strip()
+        if not stripped:
+            return
+
+        command_token = stripped.split()[0].lower()
+        if " " not in stripped and not before.endswith(" "):
+            prefix = stripped
+            for value, spec in chat_command_candidates():
+                if value.startswith(prefix):
+                    yield Completion(
+                        value,
+                        start_position=-len(prefix),
+                        display=spec.usage,
+                        display_meta=spec.description,
+                    )
+            return
+
+        command = canonical_chat_command(command_token)
+        arg_prefix = "" if before.endswith(" ") else stripped.split()[-1]
+        if command in {"/assistant", "/synthesizer", "/enable", "/disable"}:
+            options = sorted(self.runners)
+            if command == "/synthesizer":
+                options = ["auto", "clear", *options]
+            elif command == "/enable":
+                options = sorted(set(options) | set(DEFAULT_CONFIG.agents))
+            for option in options:
+                if option.startswith(arg_prefix):
+                    meta = "agent"
+                    runner = self.runners.get(option)
+                    if runner is not None:
+                        meta = f"{runner.config.backend} backend"
+                    elif option in DEFAULT_CONFIG.agents:
+                        meta = "supported default agent"
+                    elif option in {"auto", "clear"}:
+                        meta = "session setting"
+                    yield Completion(option, start_position=-len(arg_prefix), display=option, display_meta=meta)
+            return
+
+        if command == "/show":
+            for option, meta in (("latest", "most recent run"), ("--blackboard", "include blackboard")):
+                if option.startswith(arg_prefix):
+                    yield Completion(option, start_position=-len(arg_prefix), display=option, display_meta=meta)
+
+
+def should_use_prompt_toolkit() -> bool:
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def create_chat_prompt_session(
+    *,
+    root: Path,
+    runners: dict[str, AgentRunner],
+    session_synthesizer: dict[str, str | None],
+    session_degraded: dict[str, str],
+    session_status: dict[str, int],
+) -> PromptSession:
+    history_path = root / ".councli" / "history"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    return PromptSession(
+        history=FileHistory(str(history_path)),
+        completer=SlashCommandCompleter(runners),
+        complete_while_typing=True,
+        complete_style=CompleteStyle.COLUMN,
+        reserve_space_for_menu=8,
+        bottom_toolbar=lambda: chat_bottom_toolbar(
+            root=root,
+            runners=runners,
+            session_synthesizer=session_synthesizer,
+            session_degraded=session_degraded,
+            session_status=session_status,
+        ),
+        style=CHAT_PROMPT_STYLE,
+    )
+
+
+def chat_prompt_fragments() -> list[tuple[str, str]]:
+    return [
+        ("class:prompt", "councli"),
+        ("", " "),
+        ("class:prompt.symbol", "> "),
+    ]
+
+
+def chat_bottom_toolbar(
+    *,
+    root: Path,
+    runners: dict[str, AgentRunner],
+    session_synthesizer: dict[str, str | None],
+    session_degraded: dict[str, str],
+    session_status: dict[str, int],
+) -> list[tuple[str, str]]:
+    synthesizer = session_synthesizer.get("name") or "auto"
+    degraded = len(session_degraded)
+    available_count = session_status.get("available_count", 0)
+    return [
+        ("class:toolbar.label", " cwd "),
+        ("class:toolbar.value", compact_path(root)),
+        ("class:toolbar.label", " | agents "),
+        ("class:toolbar.value", f"{available_count}/{len(runners)}"),
+        ("class:toolbar.label", " | synthesizer "),
+        ("class:toolbar.value", synthesizer),
+        ("class:toolbar.label", " | degraded "),
+        ("class:toolbar.warn" if degraded else "class:toolbar.value", str(degraded)),
+        ("class:toolbar.label", " | / for commands, Ctrl-D to quit "),
+    ]
+
+
+def compact_path(path: Path, *, limit: int = 40) -> str:
+    text = str(path)
+    home = str(Path.home())
+    if text == home:
+        text = "~"
+    elif text.startswith(home + os.sep):
+        text = "~" + text[len(home) :]
+    if len(text) <= limit:
+        return text
+    return "..." + text[-(limit - 3) :]
+
+
+def read_chat_line(session: PromptSession | None) -> str:
+    if session is None:
+        return input("councli> ").strip()
+    return session.prompt(chat_prompt_fragments()).strip()
+
+
+def print_chat_help() -> None:
+    table = Table(title="Councli commands", expand=False)
+    table.add_column("Command", no_wrap=True)
+    table.add_column("Use")
+    table.add_column("Description")
+    table.add_column("Group", no_wrap=True)
+    for spec in CHAT_COMMAND_SPECS:
+        command = spec.name
+        if spec.aliases:
+            command += f" ({', '.join(spec.aliases)})"
+        table.add_row(escape(command), escape(spec.usage), escape(spec.description), escape(spec.group))
+    console.print(table)
+    console.print("Normal lines run a shared conversation turn. Slash commands opt into stronger coordination.")
+    console.print("/assistant attaches to a native session; press Ctrl-] to return.")
+
+
+def set_agent_enabled(root: Path, name: str, enabled: bool) -> tuple[Path, str]:
+    raw = read_config_raw(root)
+    agents = raw.setdefault("agents", {})
+    if not isinstance(agents, dict):
+        raise ValueError(f"Invalid config at {project_config_path(root)}: agents must be a mapping")
+    if name not in agents:
+        default_agent = DEFAULT_CONFIG.agents.get(name)
+        if default_agent is None:
+            supported = ", ".join(sorted(DEFAULT_CONFIG.agents))
+            raise ValueError(f"Unknown participant {name!r}. Supported defaults: {supported}")
+        agents[name] = default_agent.model_dump()
+    agent = agents.get(name)
+    if not isinstance(agent, dict):
+        raise ValueError(f"Invalid config at {project_config_path(root)}: agents.{name} must be a mapping")
+    already = agent.get("enabled", True) is enabled
+    agent["enabled"] = enabled
+    CouncliConfig.model_validate(raw)
+    path = project_config_path(root)
+    path.write_text(dump_yaml(raw), encoding="utf-8")
+    trust_path, _ = trust_project_config(root, reason=f"{'enable' if enabled else 'disable'}:{name}", repair_identity=True)
+    status = "already enabled" if already and enabled else "already disabled" if already else "enabled" if enabled else "disabled"
+    return trust_path, status
+
+
+def reload_runners_after_agent_toggle(
+    *,
+    root: Path,
+    runners: dict[str, AgentRunner],
+    session_degraded: dict[str, str] | None,
+    session_synthesizer: dict[str, str | None] | None,
+    session_status: dict[str, int] | None,
+    changed_agent: str,
+    enabled: bool,
+) -> None:
+    config = load_config_model(root)
+    runners.clear()
+    runners.update(build_runners(config.agents))
+    if session_degraded is not None:
+        session_degraded.pop(changed_agent, None)
+    if not enabled and session_synthesizer is not None and session_synthesizer.get("name") == changed_agent:
+        session_synthesizer["name"] = None
+    if session_status is not None:
+        session_status["available_count"] = sum(1 for runner in runners.values() if runner.health().available)
 
 
 def require_experimental(feature: str) -> None:
@@ -2919,6 +3185,31 @@ TURN_INTENTS: dict[str, TurnIntent] = {
 }
 
 
+def print_shared_turn_header(*, run_dir: Path, task: str, intent: TurnIntent, selected_names: list[str]) -> None:
+    console.rule(f"[bold]turn {run_dir.name}[/]")
+    body = "\n".join(
+        [
+            f"Task: {task}",
+            f"Intent: {intent.name} - {intent.title}",
+            f"Asking: {', '.join(selected_names)}",
+        ]
+    )
+    console.print(Panel(body, title="User turn", border_style="cyan", expand=False))
+
+
+def print_round_header(*, round_number: int, participants: list[str]) -> None:
+    names = ", ".join(participants) if participants else "-"
+    console.rule(f"[bold cyan]Round {round_number}[/] asking {names}", style="cyan")
+
+
+def print_councli_answer(final_answer: str) -> None:
+    console.print(Panel(final_answer.strip(), title="Councli", border_style="cyan", expand=False))
+
+
+def print_blackboard_footer(run_dir: Path) -> None:
+    console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+
+
 TRAILER_PATTERN = re.compile(r"\n?COUNCLI_TRAILER\s*\n(?P<body>.*)$", re.IGNORECASE | re.DOTALL)
 
 
@@ -3055,10 +3346,7 @@ def run_shared_turn(
         refs={"brief": "brief.md", "request": "request.json", "participants": "participants.json"},
     )
 
-    console.rule(f"[bold]turn {run_dir.name}[/]")
-    console.print(f"[bold]Task:[/] {task}")
-    console.print(f"[bold]Intent:[/] {intent.name} - {intent.title}")
-    console.print(f"[bold]Asking:[/] {', '.join(selected_names)}")
+    print_shared_turn_header(run_dir=run_dir, task=task, intent=intent, selected_names=selected_names)
 
     runnable: dict[str, AgentRunner] = {}
     degraded: dict[str, Any] = {}
@@ -3135,7 +3423,7 @@ def run_shared_turn(
                 root=root,
                 vote_options=vote_options,
             )
-            console.print(f"\n[bold cyan]Round {round_number}[/] asking {', '.join(runnable.keys()) if runnable else '-'}")
+            print_round_header(round_number=round_number, participants=list(runnable.keys()))
             round_results = run_turn_round(root=root, runners=runnable, prompts=packet_prompts, dry_run=dry_run, phase=phase)
             merged_results = dict(degraded)
             merged_results.update(round_results)
@@ -3204,8 +3492,7 @@ def run_shared_turn(
         synthesizer_name=selected_synthesizer,
     )
     if final_answer:
-        console.print("\n[bold]Councli[/]")
-        console.print(final_answer.strip())
+        print_councli_answer(final_answer)
     ledger.append(
         "run.completed",
         payload={
@@ -3226,7 +3513,7 @@ def run_shared_turn(
         results=latest_results,
         decision=decision,
     )
-    console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
+    print_blackboard_footer(run_dir)
     return run_dir
 
 
@@ -3344,6 +3631,8 @@ def run_turn_round(
         return results
     if not runners:
         return results
+    if should_use_live_turn_status():
+        return run_turn_round_live(root=root, runners=runners, prompts=prompts, phase=phase)
     with ThreadPoolExecutor(max_workers=max(1, len(runners))) as pool:
         resolved_prompts = {name: resolve_agent_prompt(prompts.get(name, "")) for name in runners}
         futures = {
@@ -3386,6 +3675,102 @@ def run_turn_round(
                 console.print(f"[yellow]{phase}: canceled {stopped} active agent process group(s)[/]")
             raise
     return results
+
+
+def should_use_live_turn_status() -> bool:
+    return bool(console.is_terminal and sys.stdout.isatty())
+
+
+def run_turn_round_live(
+    *,
+    root: Path,
+    runners: dict[str, AgentRunner],
+    prompts: dict[str, str | AgentPromptMessage],
+    phase: str,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    statuses = {name: "running" for name in runners}
+    start_times = {name: time.monotonic() for name in runners}
+    with ThreadPoolExecutor(max_workers=max(1, len(runners))) as pool:
+        resolved_prompts = {name: resolve_agent_prompt(prompts.get(name, "")) for name in runners}
+        futures = {
+            pool.submit(
+                runner.run,
+                resolved_prompts[name][0],
+                cwd=root,
+                dry_run=False,
+                system_prompt=resolved_prompts[name][1],
+            ): name
+            for name, runner in runners.items()
+        }
+        pending = set(futures)
+        try:
+            with Live(
+                render_round_status_table(phase=phase, statuses=statuses, start_times=start_times),
+                console=console,
+                refresh_per_second=4,
+                transient=True,
+            ) as live:
+                while pending:
+                    done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        name = futures[future]
+                        try:
+                            results[name] = future.result()
+                        except Exception as exc:  # pragma: no cover - adapter guard
+                            results[name] = runner_unavailable_result(name, str(exc))
+                        statuses[name] = participant_status_label(results[name])
+                    live.update(render_round_status_table(phase=phase, statuses=statuses, start_times=start_times))
+        except KeyboardInterrupt:
+            stopped = cancel_active_agent_processes()
+            for future in pending:
+                future.cancel()
+            if stopped:
+                console.print(f"[yellow]{phase}: canceled {stopped} active agent process group(s)[/]")
+            raise
+    console.print(render_round_status_table(phase=phase, statuses=statuses, start_times=start_times, final=True))
+    return results
+
+
+def participant_status_label(result: Any) -> str:
+    if result.ok:
+        return "done"
+    if result.skipped:
+        return "skipped"
+    return "failed"
+
+
+def render_round_status_table(
+    *,
+    phase: str,
+    statuses: dict[str, str],
+    start_times: dict[str, float],
+    final: bool = False,
+) -> Table:
+    table = Table(title=f"{phase} agents", expand=False)
+    table.add_column("Agent", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Elapsed", no_wrap=True)
+    now = time.monotonic()
+    for name, status in statuses.items():
+        style = "cyan"
+        if status == "done":
+            style = "green"
+        elif status == "skipped":
+            style = "yellow"
+        elif status == "failed":
+            style = "red"
+        elapsed = now - start_times.get(name, now)
+        table.add_row(name, f"[{style}]{status}[/]", format_seconds(elapsed if not final else max(elapsed, 0)))
+    return table
+
+
+def format_seconds(seconds: float) -> str:
+    value = max(0, int(seconds))
+    minutes, remainder = divmod(value, 60)
+    if minutes:
+        return f"{minutes}m {remainder}s"
+    return f"{remainder}s"
 
 
 def resolve_agent_prompt(value: str | AgentPromptMessage) -> tuple[str, str | None]:
@@ -3637,13 +4022,17 @@ def print_shared_round_responses(
     intent: TurnIntent,
     round_number: int,
 ) -> None:
-    console.print(f"\n[bold]Responses[/] [dim]{intent.name} round {round_number}[/]")
+    table = Table(title=f"Responses - {intent.name} round {round_number}", expand=False)
+    table.add_column("Agent", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Summary")
     for name in selected_names:
         result = parsed_round[name]["result"]
         body = parsed_round[name].get("body") if result.ok else result.error
         status = "ok" if result.ok else "skipped" if result.skipped else "failed"
         style = "dim" if result.ok else "yellow" if result.skipped else "red"
-        console.print(f"  [bold]{name}[/] [{style}]{status}[/]: {compact_for_stdout(body, limit=180)}")
+        table.add_row(name, f"[{style}]{status}[/]", compact_for_stdout(body, limit=220))
+    console.print(table)
 
 
 def synthesize_shared_turn(
@@ -4200,13 +4589,24 @@ def chat(
     print_mascot()
     console.print("[bold]councli interactive[/]")
     console.print("Type normally for shared conversation, /deliberate or /vote for explicit governance, /help for commands.")
-    print_available_participants(runners)
+    session_status = {"available_count": print_available_participants(runners)}
     session_degraded: dict[str, str] = {}
     session_synthesizer: dict[str, str | None] = {"name": config.context.synthesizer}
+    prompt_session = (
+        create_chat_prompt_session(
+            root=root,
+            runners=runners,
+            session_synthesizer=session_synthesizer,
+            session_degraded=session_degraded,
+            session_status=session_status,
+        )
+        if should_use_prompt_toolkit()
+        else None
+    )
 
     while True:
         try:
-            line = input("councli> ").strip()
+            line = read_chat_line(prompt_session)
         except EOFError:
             console.print("")
             return
@@ -4226,6 +4626,7 @@ def chat(
                 dry_run=dry_run,
                 session_degraded=session_degraded,
                 session_synthesizer=session_synthesizer,
+                session_status=session_status,
             ):
                 return
             continue
@@ -4616,19 +5017,23 @@ def validate_apply_decisions(*, decision: dict[str, Any], review_decision: dict[
     return errors
 
 
-def print_available_participants(runners: dict[str, AgentRunner], *, title: str = "Configured participants") -> None:
+def print_available_participants(runners: dict[str, AgentRunner], *, title: str = "Configured participants") -> int:
     table = Table(title=title, expand=False)
     table.add_column("Name")
     table.add_column("Backend")
     table.add_column("Status")
+    available_count = 0
     for name, runner in runners.items():
         health = runner.health()
+        if health.available:
+            available_count += 1
         table.add_row(
             name,
             health.backend,
             "available" if health.available else health.reason,
         )
     console.print(table)
+    return available_count
 
 
 def handle_chat_command(
@@ -4640,19 +5045,15 @@ def handle_chat_command(
     dry_run: bool,
     session_degraded: dict[str, str] | None = None,
     session_synthesizer: dict[str, str | None] | None = None,
+    session_status: dict[str, int] | None = None,
 ) -> bool:
     parts = line.split()
-    command = parts[0].lower()
+    raw_command = parts[0].lower()
+    command = canonical_chat_command(raw_command)
     if command in {"/quit", "/exit"}:
         return True
     if command == "/help":
-        console.print(
-            "Commands: /help, /doctor, /status, /show [run|latest] [--blackboard], "
-            "/sessions, /assistant <name> [instance], /broadcast <prompt>, /brief [task], "
-            "/synthesizer [name|clear], /deliberate <prompt>, /vote <prompt>, /council <prompt>, /quit"
-        )
-        console.print("Normal lines run a shared conversation turn. Slash commands opt into stronger coordination.")
-        console.print("/assistant attaches to a native session; press Ctrl-] to return.")
+        print_chat_help()
         return False
     if command == "/synthesizer":
         session_synthesizer = session_synthesizer if session_synthesizer is not None else {"name": None}
@@ -4680,6 +5081,40 @@ def handle_chat_command(
         return False
     if command == "/doctor":
         doctor(root=root)
+        return False
+    if command == "/agents":
+        if session_status is not None:
+            session_status["available_count"] = print_available_participants(runners)
+        else:
+            print_available_participants(runners)
+        console.print(f"[dim]Config:[/] {project_config_path(root)}")
+        return False
+    if command in {"/enable", "/disable"}:
+        if len(parts) < 2:
+            console.print(f"[yellow]Usage:[/] {command} <agent>")
+            return False
+        name = parts[1]
+        enabled = command == "/enable"
+        try:
+            trust_path, status_text = set_agent_enabled(root, name, enabled)
+            reload_runners_after_agent_toggle(
+                root=root,
+                runners=runners,
+                session_degraded=session_degraded,
+                session_synthesizer=session_synthesizer,
+                session_status=session_status,
+                changed_agent=name,
+                enabled=enabled,
+            )
+        except (FileNotFoundError, ValueError, ConfigTrustError, ProjectIdentityError) as exc:
+            console.print(f"[red]Could not {command.lstrip('/')} {name}:[/] {exc}")
+            return False
+        style = "green" if enabled else "yellow"
+        console.print(f"[{style}]{name} {status_text}[/]")
+        console.print(f"[dim]Config:[/] {project_config_path(root)}")
+        console.print(f"[dim]Trusted:[/] {trust_path}")
+        if session_status is not None:
+            session_status["available_count"] = print_available_participants(runners)
         return False
     if command == "/status":
         status(root=root)
@@ -4766,7 +5201,7 @@ def handle_chat_command(
                 run_id = part
         show(run=run_id, root=root, blackboard=show_blackboard)
         return False
-    console.print(f"[yellow]Unknown councli command:[/] {command}. Type /help.")
+    console.print(f"[yellow]Unknown councli command:[/] {raw_command}. Type /help.")
     return False
 
 
