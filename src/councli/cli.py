@@ -92,6 +92,7 @@ from councli.native import (
     latest_task_brief,
 )
 from councli.protocol import render_result, run_executor
+from councli.prompt_pack import AgentPromptMessage, RoomPromptContext, compose_participant_prompt, compose_synthesis_prompt
 from councli.schema import load_schema, validate_json_schema_subset
 
 
@@ -535,6 +536,8 @@ def doctor(
             },
             "read_only_policy": runner.config.read_only_policy,
             "broadcast_policy": runner.config.broadcast_policy,
+            "system_prompt_transport": runner.config.system_prompt_transport,
+            "system_prompt_flag": runner.config.system_prompt_flag,
             "sandbox_wrapper": runner.config.sandbox_wrapper,
             "version": health.version,
             "version_status": health.version_status,
@@ -880,6 +883,7 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
     assistant_supported = bool(runner.config.start_command or runner.config.backend == "tmux")
     chat_policy = command_policy_for_intent(runner, "chat")
     deliberate_policy = command_policy_for_intent(runner, "deliberate")
+    synthesis_policy = command_policy_for_intent(runner, "synthesis")
     vote_policy = command_policy_for_intent(runner, "vote")
     broadcast_policy = command_policy_for_intent(runner, "broadcast")
     return {
@@ -898,6 +902,11 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
             supported=shared_supported and adapter_supports_intent(runner, "vote"),
             policy=vote_policy,
         ),
+        "synthesis": intent_readiness(
+            health,
+            supported=shared_supported and adapter_supports_intent(runner, "synthesis"),
+            policy=synthesis_policy,
+        ),
         "broadcast": intent_readiness(
             health,
             supported=broadcast_supported and adapter_supports_intent(runner, "broadcast"),
@@ -908,7 +917,12 @@ def doctor_intent_readiness(runner: AgentRunner, health: Any) -> dict[str, dict[
 
 
 def adapter_supports_intent(runner: AgentRunner, intent: str) -> bool:
-    return not runner.config.capabilities or intent in runner.config.capabilities
+    capabilities = runner.config.capabilities
+    if not capabilities or intent in capabilities:
+        return True
+    if intent == "synthesis" and any(value in capabilities for value in ("chat", "deliberate")):
+        return True
+    return False
 
 
 def command_capabilities_for(runner: AgentRunner, command_kind: str) -> list[str]:
@@ -2879,7 +2893,7 @@ TURN_INTENTS: dict[str, TurnIntent] = {
             "Answer the user directly as part of the council. Do not force critique, voting, "
             "executor selection, or implementation unless the user explicitly asks."
         ),
-        max_rounds=2,
+        max_rounds=1,
     ),
     "deliberate": TurnIntent(
         name="deliberate",
@@ -2964,6 +2978,8 @@ def build_participants_artifact(
             },
             "read_only_policy": runner.config.read_only_policy,
             "broadcast_policy": runner.config.broadcast_policy,
+            "system_prompt_transport": runner.config.system_prompt_transport,
+            "system_prompt_flag": runner.config.system_prompt_flag,
             "sandbox_wrapper": runner.config.sandbox_wrapper,
             "version": health.version,
             "version_status": health.version_status,
@@ -2988,8 +3004,13 @@ def run_shared_turn(
     participant: list[str] | None,
     dry_run: bool,
     session_degraded: dict[str, str] | None = None,
+    synthesizer_name: str | None = None,
 ) -> Path | None:
     intent = TURN_INTENTS[intent_name]
+    vote_options = extract_vote_options(task) if intent.require_vote else []
+    if intent.require_vote and len(vote_options) < 2:
+        console.print("[red]/vote requires closed options.[/] Use a colon plus comma-separated options, e.g. /vote choose: exec, tmux, pty")
+        return None
     selected_names = participant or [
         name
         for name, runner in runners.items()
@@ -3084,6 +3105,7 @@ def run_shared_turn(
     latest_results: dict[str, Any] = dict(degraded)
     round_count = 0
     context_config = load_config_model(root).context
+    selected_synthesizer = synthesizer_name or context_config.synthesizer
     try:
         for round_number in range(1, intent.max_rounds + 1):
             round_count = round_number
@@ -3104,11 +3126,14 @@ def run_shared_turn(
                 ledger=ledger,
                 run_dir=run_dir,
                 participants=list(runnable.keys()),
+                roster=selected_names,
                 task=task,
                 intent=intent,
                 brief_path=brief.path,
                 round_number=round_number,
                 peer_context=context,
+                root=root,
+                vote_options=vote_options,
             )
             console.print(f"\n[bold cyan]Round {round_number}[/] asking {', '.join(runnable.keys()) if runnable else '-'}")
             round_results = run_turn_round(root=root, runners=runnable, prompts=packet_prompts, dry_run=dry_run, phase=phase)
@@ -3121,10 +3146,8 @@ def run_shared_turn(
                     body, trailer = result.output, default_turn_trailer()
                 else:
                     body, trailer = parse_turn_trailer(result.output if result.ok else "")
-                if result.ok:
-                    result = replace(result, output=body)
                 latest_results[name] = result
-                parsed_round[name] = {"result": result, "trailer": trailer}
+                parsed_round[name] = {"result": result, "body": body, "trailer": trailer}
                 sidecar = write_shared_turn_result(
                     root=root,
                     run_dir=run_dir,
@@ -3155,7 +3178,7 @@ def run_shared_turn(
         console.print(f"[dim]Blackboard:[/] {run_dir / 'blackboard.md'}")
         return run_dir
 
-    decision = decide_shared_vote(all_rounds[-1], selected_names) if intent.require_vote and all_rounds else None
+    decision = decide_shared_vote(all_rounds[-1], selected_names, allowed_options=vote_options) if intent.require_vote and all_rounds else None
     if decision is not None:
         write_json(run_dir / "decisions" / "vote.json", decision)
         ledger.append(
@@ -3178,6 +3201,7 @@ def run_shared_turn(
         dry_run=dry_run,
         ledger=ledger,
         decision=decision,
+        synthesizer_name=selected_synthesizer,
     )
     if final_answer:
         console.print("\n[bold]Councli[/]")
@@ -3214,6 +3238,7 @@ def run_conversation_turn(
     participant: list[str] | None,
     dry_run: bool,
     session_degraded: dict[str, str] | None = None,
+    synthesizer_name: str | None = None,
 ) -> Path | None:
     return run_shared_turn(
         task=task,
@@ -3223,6 +3248,7 @@ def run_conversation_turn(
         participant=participant,
         dry_run=dry_run,
         session_degraded=session_degraded,
+        synthesizer_name=synthesizer_name,
     )
 
 
@@ -3231,24 +3257,47 @@ def write_shared_turn_packets(
     ledger: EventLedger,
     run_dir: Path,
     participants: list[str],
+    roster: list[str],
     task: str,
     intent: TurnIntent,
     brief_path: Path,
     round_number: int,
     peer_context: str,
-) -> dict[str, str]:
-    prompts: dict[str, str] = {}
+    root: Path,
+    vote_options: list[str] | None = None,
+) -> dict[str, AgentPromptMessage]:
+    prompts: dict[str, AgentPromptMessage] = {}
     phase = f"{intent.name}.round{round_number}"
     for name in participants:
-        packet = shared_turn_prompt(
-            task=task,
-            intent=intent,
-            brief_path=brief_path,
-            round_number=round_number,
-            peer_context=peer_context,
-            participant=name,
+        mode = shared_turn_prompt_mode(intent=intent, round_number=round_number)
+        output_path = run_dir / "shared" / phase / f"{name}.md"
+        message = compose_participant_prompt(
+            RoomPromptContext(
+                participant=name,
+                roster=roster,
+                mode=mode,
+                turn_id=run_dir.name,
+                project_root=root,
+                task_path=brief_path,
+                blackboard_path=run_dir / "blackboard.md",
+                task=task,
+                round_number=round_number,
+                rounds_total=intent.max_rounds,
+                peer_context=peer_context,
+                output_path=output_path,
+                permission_posture="read_only",
+                vote_options=vote_options,
+            )
+        )
+        packet = message.as_text()
+        packet += (
+            "\n"
+            f"Shared task brief: {brief_path}\n"
+            f"Round: {round_number}\n"
         )
         packet_path = ledger.write_packet(name, phase, packet)
+        pointer = shared_turn_packet_pointer(packet_path)
+        prompt_message = AgentPromptMessage(system_prompt=message.system_prompt, prompt=pointer)
         packet_ref = packet_path.relative_to(run_dir).as_posix()
         ledger.append(
             "packet.created",
@@ -3257,9 +3306,15 @@ def write_shared_turn_packets(
             refs={"packet": packet_ref},
             payload={"intent": intent.name, "round": round_number},
         )
-        prompts[name] = shared_turn_packet_pointer(packet_path)
+        prompts[name] = prompt_message
     ledger.render()
     return prompts
+
+
+def shared_turn_prompt_mode(*, intent: TurnIntent, round_number: int) -> str:
+    if intent.name == "deliberate":
+        return f"deliberate.round{round_number}"
+    return intent.name
 
 
 def shared_turn_packet_pointer(packet_path: Path) -> str:
@@ -3275,7 +3330,7 @@ def run_turn_round(
     *,
     root: Path,
     runners: dict[str, AgentRunner],
-    prompts: dict[str, str],
+    prompts: dict[str, str | AgentPromptMessage],
     dry_run: bool,
     phase: str,
 ) -> dict[str, Any]:
@@ -3283,14 +3338,22 @@ def run_turn_round(
     if dry_run:
         for name, runner in runners.items():
             console.print(f"[cyan]{phase}:{name} start[/]")
-            results[name] = runner.run(prompts.get(name, ""), cwd=root, dry_run=True)
+            prompt, system_prompt = resolve_agent_prompt(prompts.get(name, ""))
+            results[name] = runner.run(prompt, cwd=root, dry_run=True, system_prompt=system_prompt)
             print_participant_status(phase, name, results[name])
         return results
     if not runners:
         return results
     with ThreadPoolExecutor(max_workers=max(1, len(runners))) as pool:
+        resolved_prompts = {name: resolve_agent_prompt(prompts.get(name, "")) for name in runners}
         futures = {
-            pool.submit(runner.run, prompts.get(name, ""), cwd=root, dry_run=False): name
+            pool.submit(
+                runner.run,
+                resolved_prompts[name][0],
+                cwd=root,
+                dry_run=False,
+                system_prompt=resolved_prompts[name][1],
+            ): name
             for name, runner in runners.items()
         }
         start_times = {name: time.monotonic() for name in runners}
@@ -3325,62 +3388,10 @@ def run_turn_round(
     return results
 
 
-def shared_turn_prompt(
-    *,
-    task: str,
-    intent: TurnIntent,
-    brief_path: Path,
-    round_number: int,
-    peer_context: str,
-    participant: str | None = None,
-) -> str:
-    parts = [
-        "COUNCLI_SHARED_TURN=1",
-        f"COUNCLI_INTENT={intent.name}",
-        f"COUNCLI_PARTICIPANT={participant or 'unknown'}",
-        "",
-        "You are one participant in a councli shared room with other coding assistants.",
-        "Councli is only the control plane: it records the blackboard and routes messages.",
-        "Do not invent a fixed lifecycle. Follow the user's prompt and this turn intent.",
-        "Do not edit files or run implementation commands in this turn.",
-        intent.instruction,
-        "",
-        f"Round: {round_number}",
-        f"Shared task brief: {brief_path}",
-        "",
-        "User prompt:",
-        task,
-    ]
-    if peer_context:
-        parts.extend(
-            [
-                "",
-                "Visible blackboard from prior round(s):",
-                peer_context,
-                "",
-                "React to the strongest useful points. If the council can answer now, do not ask for more rounds.",
-            ]
-        )
-    else:
-        parts.extend(
-            [
-                "",
-                "This is the first round. Answer independently; do not claim to know what other participants think yet.",
-            ]
-        )
-    parts.extend(
-        [
-            "",
-            "End with this machine-readable trailer:",
-            "COUNCLI_TRAILER",
-            "continue: false",
-            "recommend: none",
-            "summary: one short line",
-        ]
-    )
-    if intent.require_vote:
-        parts.extend(["vote: your chosen option or answer", "confidence: 0.0-1.0"])
-    return "\n".join(parts).rstrip() + "\n"
+def resolve_agent_prompt(value: str | AgentPromptMessage) -> tuple[str, str | None]:
+    if isinstance(value, AgentPromptMessage):
+        return value.prompt, value.system_prompt
+    return str(value), None
 
 
 def parse_turn_trailer(output: str) -> tuple[str, dict[str, Any]]:
@@ -3416,9 +3427,9 @@ def default_turn_trailer() -> dict[str, Any]:
 def render_peer_context(
     all_rounds: list[dict[str, dict[str, Any]]],
     *,
-    latest_rounds: int = 2,
-    per_participant_limit: int = 6000,
-    total_limit: int = 24000,
+    latest_rounds: int = 0,
+    per_participant_limit: int = 0,
+    total_limit: int = 0,
     include_failures: str = "summary",
     overflow_ref: str | None = None,
 ) -> str:
@@ -3458,12 +3469,16 @@ def peer_context_body(result: Any, *, include_failures: str) -> str | None:
 
 def bound_peer_body(body: str, *, limit: int) -> str:
     text = (body or "(empty)").strip()
+    if limit <= 0:
+        return text
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + f"\n\n[truncated by councli after {limit} characters]"
 
 
 def bound_context_text(text: str, *, limit: int, overflow_ref: str | None = None) -> str:
+    if limit <= 0:
+        return text
     if not text or len(text) <= limit:
         return text
     detail = f"context truncated by councli after {limit} characters"
@@ -3625,7 +3640,7 @@ def print_shared_round_responses(
     console.print(f"\n[bold]Responses[/] [dim]{intent.name} round {round_number}[/]")
     for name in selected_names:
         result = parsed_round[name]["result"]
-        body = result.output if result.ok else result.error
+        body = parsed_round[name].get("body") if result.ok else result.error
         status = "ok" if result.ok else "skipped" if result.skipped else "failed"
         style = "dim" if result.ok else "yellow" if result.skipped else "red"
         console.print(f"  [bold]{name}[/] [{style}]{status}[/]: {compact_for_stdout(body, limit=180)}")
@@ -3643,6 +3658,7 @@ def synthesize_shared_turn(
     dry_run: bool,
     ledger: EventLedger,
     decision: dict[str, Any] | None,
+    synthesizer_name: str | None = None,
 ) -> str:
     if not all_rounds:
         return "No assistant returned a usable response."
@@ -3662,7 +3678,12 @@ def synthesize_shared_turn(
             status="ok",
         )
         return answer
-    if len(ok_names) == 1:
+    selected_synthesizer = choose_synthesizer(
+        requested=synthesizer_name,
+        ok_names=ok_names,
+        runners=runners,
+    )
+    if len(ok_names) == 1 and selected_synthesizer is None:
         only = ok_names[0]
         answer = f"Single-source answer from {only} (only one participant responded):\n\n{results[only].output.strip()}"
         write_synthesis_artifact(
@@ -3675,7 +3696,19 @@ def synthesize_shared_turn(
         )
         return answer
 
-    synthesizer_name = ok_names[0]
+    if selected_synthesizer is None:
+        fallback = local_shared_synthesis(intent=intent, names=ok_names, results=results, decision=decision)
+        write_synthesis_artifact(
+            run_dir=run_dir,
+            ledger=ledger,
+            body=fallback,
+            synthesizer="local",
+            source_participants=ok_names,
+            status="ok",
+        )
+        return fallback
+
+    synthesizer_name = selected_synthesizer
     try:
         synthesizer = shared_turn_runner(runners[synthesizer_name], intent_name="synthesis")
     except ValueError:
@@ -3690,11 +3723,35 @@ def synthesize_shared_turn(
         )
         return fallback
 
-    prompt = synthesis_prompt(task=task, intent=intent, names=ok_names, all_rounds=all_rounds, decision=decision)
+    peer_context = render_peer_context(
+        all_rounds,
+        latest_rounds=0,
+        per_participant_limit=0,
+        total_limit=0,
+        include_failures="full",
+        overflow_ref=str(run_dir / "blackboard.md"),
+    )
+    synthesis_message = compose_synthesis_prompt(
+        RoomPromptContext(
+            participant=synthesizer_name,
+            roster=selected_names,
+            mode="synthesis",
+            turn_id=run_dir.name,
+            project_root=root,
+            task_path=run_dir / "brief.md",
+            blackboard_path=run_dir / "blackboard.md",
+            task=task,
+            peer_context=peer_context,
+            output_path=run_dir / "synthesis" / "synthesis.md",
+            permission_posture="read_only",
+            decision=json.dumps(decision, sort_keys=True) if decision else None,
+        ),
+        source_participants=ok_names,
+    )
     result = run_turn_round(
         root=root,
         runners={synthesizer_name: synthesizer},
-        prompts={synthesizer_name: prompt},
+        prompts={synthesizer_name: synthesis_message},
         dry_run=False,
         phase="synthesis",
     ).get(synthesizer_name, runner_unavailable_result(synthesizer_name, "synthesis did not return"))
@@ -3724,6 +3781,30 @@ def synthesize_shared_turn(
         status="ok",
     )
     return fallback
+
+
+def choose_synthesizer(
+    *,
+    requested: str | None,
+    ok_names: list[str],
+    runners: dict[str, AgentRunner],
+) -> str | None:
+    candidates = [requested] if requested else []
+    candidates.extend(name for name in ok_names if name not in candidates)
+    for name in candidates:
+        if not name:
+            continue
+        runner = runners.get(name)
+        if runner is None:
+            continue
+        if not adapter_supports_intent(runner, "synthesis"):
+            continue
+        if not runner.health().available:
+            continue
+        policy_ok, _, _ = command_policy_for_intent(runner, "synthesis")
+        if policy_ok:
+            return name
+    return None
 
 
 def write_synthesis_artifact(
@@ -3784,43 +3865,6 @@ def write_synthesis_artifact(
     ledger.render()
 
 
-def synthesis_prompt(
-    *,
-    task: str,
-    intent: TurnIntent,
-    names: list[str],
-    all_rounds: list[dict[str, dict[str, Any]]],
-    decision: dict[str, Any] | None,
-) -> str:
-    parts = [
-        "COUNCLI_SHARED_TURN_SYNTHESIS=1",
-        f"COUNCLI_INTENT={intent.name}",
-        "",
-        "You are the temporary synthesizer for a councli shared room.",
-        "Use the participant responses below to answer the user as one unified council voice.",
-        "Do not mention lifecycle phases or implementation unless the user asked for them.",
-        "Be concise and direct.",
-        "Name the participants whose outputs support the answer.",
-        "If participants disagree in a meaningful way, state the disagreement instead of hiding it.",
-        "Do not claim consensus when the evidence only supports a partial or single-source answer.",
-        "",
-        f"User prompt:\n{task}",
-        "",
-        "Participant responses:",
-    ]
-    for index, round_data in enumerate(all_rounds, start=1):
-        parts.append(f"\n## Round {index}")
-        for name in names:
-            if name not in round_data:
-                continue
-            result = round_data[name]["result"]
-            if result.ok:
-                parts.extend([f"\n### {name}", result.output.strip()])
-    if decision:
-        parts.extend(["", "Explicit vote result:", json.dumps(decision, sort_keys=True)])
-    return "\n".join(parts).rstrip() + "\n"
-
-
 def local_shared_synthesis(
     *,
     intent: TurnIntent,
@@ -3830,17 +3874,45 @@ def local_shared_synthesis(
 ) -> str:
     if decision and decision.get("winner"):
         return f"The council vote selected {decision['winner']}: {decision.get('reason') or 'majority result'}."
-    lines = ["The available assistants responded with these combined points:"]
+    lines = [
+        "No synthesizer returned a usable council answer. Raw participant outputs follow; councli is not claiming consensus."
+    ]
     for name in names:
-        lines.append(f"- {name}: {compact_for_stdout(results[name].output, limit=180)}")
-    if intent.name == "deliberate":
-        lines.append("Use these points as the shared recommendation; ask for /vote only if you want a formal decision.")
+        lines.extend(["", f"## {name}", results[name].output.strip() or "(empty)"])
     return "\n".join(lines)
 
 
-def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: list[str]) -> dict[str, Any]:
+def extract_vote_options(task: str) -> list[str]:
+    text = (task or "").strip()
+    if ":" in text:
+        text = text.rsplit(":", 1)[1]
+    artifact_options = re.findall(r"\b(?:plan|patch|diff|worktree|option):[A-Za-z0-9_.:-]+\b", text)
+    parts: list[str]
+    if artifact_options:
+        parts = artifact_options
+    elif "," in text:
+        parts = re.split(r",|\bor\b", text)
+    elif "/" in text and " " not in text.strip("/"):
+        parts = text.split("/")
+    else:
+        return []
+    options = [clean_vote_option(part) for part in parts]
+    return list(dict.fromkeys(option for option in options if option))
+
+
+def clean_vote_option(value: str) -> str:
+    return value.strip().strip("`'\". ")
+
+
+def decide_shared_vote(
+    parsed_round: dict[str, dict[str, Any]],
+    selected_names: list[str],
+    *,
+    allowed_options: list[str] | None = None,
+) -> dict[str, Any]:
     votes: dict[str, str] = {}
     abstentions: dict[str, str] = {}
+    allowed = set(allowed_options or [])
     for name in selected_names:
         data = parsed_round.get(name)
         if not data:
@@ -3860,6 +3932,9 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
             trailer_vote = str(trailer.get("vote") or "").strip()
             abstentions[name] = invalid_reason or ("invalid response sidecar" if trailer_vote else "missing structured vote")
             continue
+        if allowed and vote not in allowed:
+            abstentions[name] = f"vote is not one of the closed options: {vote}"
+            continue
         votes[name] = vote
     counts: dict[str, int] = {}
     for vote in votes.values():
@@ -3872,6 +3947,7 @@ def decide_shared_vote(parsed_round: dict[str, dict[str, Any]], selected_names: 
         "kind": "vote.decision",
         "approved": bool(winner),
         "winner": winner,
+        "options": allowed_options or [],
         "votes": votes,
         "counts": counts,
         "abstentions": abstentions,
@@ -4126,6 +4202,7 @@ def chat(
     console.print("Type normally for shared conversation, /deliberate or /vote for explicit governance, /help for commands.")
     print_available_participants(runners)
     session_degraded: dict[str, str] = {}
+    session_synthesizer: dict[str, str | None] = {"name": config.context.synthesizer}
 
     while True:
         try:
@@ -4148,6 +4225,7 @@ def chat(
                 participant=participant,
                 dry_run=dry_run,
                 session_degraded=session_degraded,
+                session_synthesizer=session_synthesizer,
             ):
                 return
             continue
@@ -4159,6 +4237,7 @@ def chat(
             participant=participant,
             dry_run=dry_run,
             session_degraded=session_degraded,
+            synthesizer_name=session_synthesizer.get("name"),
         )
 
 
@@ -4560,6 +4639,7 @@ def handle_chat_command(
     participant: list[str] | None,
     dry_run: bool,
     session_degraded: dict[str, str] | None = None,
+    session_synthesizer: dict[str, str | None] | None = None,
 ) -> bool:
     parts = line.split()
     command = parts[0].lower()
@@ -4569,10 +4649,34 @@ def handle_chat_command(
         console.print(
             "Commands: /help, /doctor, /status, /show [run|latest] [--blackboard], "
             "/sessions, /assistant <name> [instance], /broadcast <prompt>, /brief [task], "
-            "/deliberate <prompt>, /vote <prompt>, /council <prompt>, /quit"
+            "/synthesizer [name|clear], /deliberate <prompt>, /vote <prompt>, /council <prompt>, /quit"
         )
         console.print("Normal lines run a shared conversation turn. Slash commands opt into stronger coordination.")
         console.print("/assistant attaches to a native session; press Ctrl-] to return.")
+        return False
+    if command == "/synthesizer":
+        session_synthesizer = session_synthesizer if session_synthesizer is not None else {"name": None}
+        if len(parts) == 1:
+            console.print(f"[bold]Synthesizer:[/] {session_synthesizer.get('name') or '(auto)'}")
+            return False
+        name = parts[1]
+        if name in {"clear", "auto", "none"}:
+            session_synthesizer["name"] = None
+            console.print("[green]Synthesizer:[/] auto")
+            return False
+        runner = runners.get(name)
+        if runner is None:
+            console.print(f"[red]Unknown synthesizer:[/] {name}")
+            return False
+        if not adapter_supports_intent(runner, "synthesis"):
+            console.print(f"[red]{name} does not support synthesis[/]")
+            return False
+        health = runner.health()
+        if not health.available:
+            console.print(f"[red]{name} is not available:[/] {health.reason}")
+            return False
+        session_synthesizer["name"] = name
+        console.print(f"[green]Synthesizer:[/] {name}")
         return False
     if command == "/doctor":
         doctor(root=root)
@@ -4649,6 +4753,7 @@ def handle_chat_command(
             participant=participant,
             dry_run=dry_run,
             session_degraded=session_degraded,
+            synthesizer_name=(session_synthesizer or {}).get("name"),
         )
         return False
     if command == "/show":

@@ -32,6 +32,8 @@ EXECUTABLE_AGENT_FIELDS = (
     "resume_capabilities",
     "read_only_policy",
     "broadcast_policy",
+    "system_prompt_transport",
+    "system_prompt_flag",
     "version_command",
     "readiness_command",
     "sandbox_wrapper",
@@ -103,6 +105,8 @@ class AgentConfig(BaseModel):
     )
     read_only_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
     broadcast_policy: Literal["safe_only", "allow_full_permission"] = "safe_only"
+    system_prompt_transport: Literal["append_system_flag", "prompt_prefix", "agents_file", "none"] = "prompt_prefix"
+    system_prompt_flag: str | None = None
     version_command: list[str] | None = None
     readiness_command: list[str] | None = None
     sandbox_wrapper: list[str] | None = None
@@ -131,6 +135,8 @@ class AgentConfig(BaseModel):
         for part in value:
             if "{prompt}" in part and part != "{prompt}":
                 raise ValueError("{prompt} must be a standalone argv token")
+            if "{system_prompt}" in part and part != "{system_prompt}":
+                raise ValueError("{system_prompt} must be a standalone argv token")
         return value
 
     @field_validator("version_command", "readiness_command")
@@ -218,9 +224,10 @@ class ArtifactConfig(BaseModel):
 
 
 class ContextConfig(BaseModel):
-    peer_context_latest_rounds: int = Field(default=2, ge=1, le=10)
-    peer_context_per_participant_chars: int = Field(default=6000, ge=1, le=200_000)
-    peer_context_total_chars: int = Field(default=24000, ge=1, le=500_000)
+    synthesizer: str | None = None
+    peer_context_latest_rounds: int = Field(default=0, ge=0, le=10)
+    peer_context_per_participant_chars: int = Field(default=0, ge=0, le=200_000)
+    peer_context_total_chars: int = Field(default=0, ge=0, le=500_000)
     peer_context_include_failures: Literal["summary", "full", "omit"] = "summary"
 
 
@@ -261,7 +268,7 @@ DEFAULT_CONFIG = CouncliConfig(
             backend="exec",
             binary="codex",
             display_name="Codex CLI",
-            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            capabilities=["chat", "deliberate", "synthesis", "vote", "broadcast", "assistant"],
             command_capabilities=["planning_only", "reads_workspace"],
             broadcast_capabilities=["planning_only", "reads_workspace"],
             start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
@@ -292,15 +299,17 @@ DEFAULT_CONFIG = CouncliConfig(
             backend="exec",
             binary="claude",
             display_name="Claude Code",
-            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            capabilities=["chat", "deliberate", "synthesis", "vote", "broadcast", "assistant"],
             command_capabilities=["planning_only", "reads_workspace"],
             broadcast_capabilities=["planning_only", "reads_workspace"],
             start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             resume_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
             version_command=["claude", "--version"],
             readiness_command=["claude", "auth", "status"],
-            command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
-            broadcast_command=["claude", "--permission-mode", "plan", "-p", "{prompt}"],
+            system_prompt_transport="append_system_flag",
+            system_prompt_flag="--append-system-prompt",
+            command=["claude", "--append-system-prompt", "{system_prompt}", "--permission-mode", "plan", "-p", "{prompt}"],
+            broadcast_command=["claude", "--append-system-prompt", "{system_prompt}", "--permission-mode", "plan", "-p", "{prompt}"],
             resume_command=["claude", "--resume", "{session_id}"],
             start_command=["claude", "--dangerously-skip-permissions"],
             timeout_seconds=900,
@@ -309,7 +318,7 @@ DEFAULT_CONFIG = CouncliConfig(
             backend="exec",
             binary="agy",
             display_name="AGY",
-            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            capabilities=["chat", "deliberate", "synthesis", "vote", "broadcast", "assistant"],
             command_capabilities=["planning_only", "reads_workspace"],
             broadcast_capabilities=["planning_only", "reads_workspace"],
             start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
@@ -326,7 +335,7 @@ DEFAULT_CONFIG = CouncliConfig(
             backend="exec",
             binary="codewhale",
             display_name="CodeWhale",
-            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            capabilities=["chat", "deliberate", "synthesis", "vote", "broadcast", "assistant"],
             command_capabilities=["reads_workspace", "runs_tools"],
             broadcast_capabilities=["reads_workspace", "runs_tools"],
             start_capabilities=["reads_workspace", "writes_workspace", "runs_tools", "network_access", "full_permission"],
@@ -343,7 +352,7 @@ DEFAULT_CONFIG = CouncliConfig(
             backend="exec",
             binary="kimi",
             display_name="Kimi",
-            capabilities=["chat", "deliberate", "vote", "broadcast", "assistant"],
+            capabilities=["chat", "deliberate", "synthesis", "vote", "broadcast", "assistant"],
             command_capabilities=["reads_workspace", "runs_tools"],
             broadcast_capabilities=["reads_workspace", "runs_tools"],
             start_capabilities=["reads_workspace", "writes_workspace", "runs_tools"],

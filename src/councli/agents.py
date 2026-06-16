@@ -202,11 +202,26 @@ class AgentRunner:
             return None, "launch_failed"
         return proc, "ok"
 
-    def render_command(self, prompt: str) -> list[str]:
-        command = [part.replace("{prompt}", prompt) for part in self.config.command]
+    def render_command(self, prompt: str, *, system_prompt: str | None = None) -> list[str]:
+        command_prompt = self.transport_prompt(prompt, system_prompt=system_prompt)
+        command_system_prompt = system_prompt or ""
+        command = [
+            part.replace("{prompt}", command_prompt).replace("{system_prompt}", command_system_prompt)
+            for part in self.config.command
+        ]
         if self.config.sandbox_wrapper:
             return [*self.config.sandbox_wrapper, *command]
         return command
+
+    def transport_prompt(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        if not system_prompt:
+            return prompt
+        transport = self.config.system_prompt_transport
+        if transport == "append_system_flag" and command_contains_system_placeholder(self.config.command):
+            return prompt
+        if transport == "none":
+            return prompt
+        return f"{system_prompt.rstrip()}\n\n{prompt.lstrip()}"
 
     def run(
         self,
@@ -215,14 +230,15 @@ class AgentRunner:
         cwd: Path,
         dry_run: bool = False,
         output_path: Path | None = None,
+        system_prompt: str | None = None,
     ) -> AgentRunResult:
         if self.config.backend == "tmux":
             return self._run_tmux(prompt, cwd=cwd, dry_run=dry_run, output_path=output_path)
-        return self._run_exec(prompt, cwd=cwd, dry_run=dry_run)
+        return self._run_exec(prompt, cwd=cwd, dry_run=dry_run, system_prompt=system_prompt)
 
-    def _run_exec(self, prompt: str, *, cwd: Path, dry_run: bool = False) -> AgentRunResult:
+    def _run_exec(self, prompt: str, *, cwd: Path, dry_run: bool = False, system_prompt: str | None = None) -> AgentRunResult:
         health = self.health()
-        command = self.render_command(prompt)
+        command = self.render_command(prompt, system_prompt=system_prompt)
 
         if not health.available:
             return AgentRunResult(
@@ -817,6 +833,10 @@ def compact_one_line(text: str, *, limit: int = 200) -> str | None:
 
 def shell_join(command: list[str]) -> str:
     return shlex.join(command)
+
+
+def command_contains_system_placeholder(command: list[str]) -> bool:
+    return any(part == "{system_prompt}" for part in command)
 
 
 def scoped_session_name(root: Path, agent: str, *, instance: str | None = None, prefix: str = "councli") -> str:
