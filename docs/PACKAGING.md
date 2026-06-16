@@ -8,7 +8,7 @@ entry point:
 councli = "councli.cli:app"
 ```
 
-The PyPI distribution name is `councli-ai`; the installed command remains
+The PyPI distribution name is `councilroom-ai`; the installed command remains
 `councli`.
 
 ## Local build
@@ -22,8 +22,8 @@ uv build
 Expected artifacts:
 
 ```text
-dist/councli_ai-<version>.tar.gz
-dist/councli_ai-<version>-py3-none-any.whl
+dist/councilroom_ai-<version>.tar.gz
+dist/councilroom_ai-<version>-py3-none-any.whl
 ```
 
 The wheel must include `councli/schemas/*.schema.json`; `councli verify` and
@@ -36,7 +36,7 @@ python - <<'PY'
 import zipfile
 from pathlib import Path
 
-wheel = sorted(Path("dist").glob("councli_ai-*.whl"))[-1]
+wheel = sorted(Path("dist").glob("councilroom_ai-*.whl"))[-1]
 with zipfile.ZipFile(wheel) as z:
     for name in z.namelist():
         if "schemas" in name:
@@ -49,7 +49,7 @@ PY
 ```bash
 tmpdir="$(mktemp -d)"
 python -m venv "$tmpdir/venv"
-"$tmpdir/venv/bin/python" -m pip install dist/councli_ai-*.whl
+"$tmpdir/venv/bin/python" -m pip install dist/councilroom_ai-*.whl
 "$tmpdir/venv/bin/councli" --help
 "$tmpdir/venv/bin/python" - <<'PY'
 from councli.schema import load_schema
@@ -62,7 +62,7 @@ On Windows PowerShell, use:
 
 ```powershell
 py -m venv .packaging-test
-.\.packaging-test\Scripts\python.exe -m pip install .\dist\councli_ai-*.whl
+.\.packaging-test\Scripts\python.exe -m pip install .\dist\councilroom_ai-*.whl
 .\.packaging-test\Scripts\councli.exe --help
 ```
 

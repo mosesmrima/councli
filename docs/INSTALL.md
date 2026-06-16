@@ -16,11 +16,11 @@ environment and exposes the `councli` shell command on your `PATH`.
 
 ## Install from PyPI
 
-The PyPI distribution is `councli-ai`; the installed shell command is
+The PyPI distribution is `councilroom-ai`; the installed shell command is
 `councli`.
 
 ```bash
-pipx install councli-ai
+pipx install councilroom-ai
 councli --help
 ```
 
@@ -34,13 +34,13 @@ councli --help
 Upgrade:
 
 ```bash
-pipx upgrade councli-ai
+pipx upgrade councilroom-ai
 ```
 
 Uninstall:
 
 ```bash
-pipx uninstall councli-ai
+pipx uninstall councilroom-ai
 ```
 
 ## Install from a local checkout
@@ -90,7 +90,7 @@ brew install tmux
 Then install `councli`:
 
 ```bash
-pipx install councli-ai
+pipx install councilroom-ai
 ```
 
 The `tmux` step is optional unless you want native assistant sessions through
@@ -125,7 +125,7 @@ Inside WSL:
 sudo apt update
 sudo apt install python3 python3-pip pipx tmux
 pipx ensurepath
-pipx install councli-ai
+pipx install councilroom-ai
 ```
 
 Install and authenticate assistant CLIs inside WSL as well; Windows-installed

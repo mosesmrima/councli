@@ -48,11 +48,11 @@ authenticated, configured, and on `PATH` in the same shell.
 Recommended install from PyPI:
 
 ```bash
-pipx install councli-ai
+pipx install councilroom-ai
 councli --help
 ```
 
-The PyPI distribution is `councli-ai`; the installed shell command is
+The PyPI distribution is `councilroom-ai`; the installed shell command is
 `councli`.
 
 Install from GitHub:
