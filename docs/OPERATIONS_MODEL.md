@@ -185,7 +185,7 @@ Storage classes need separate retention:
 | raw tmux recordings | rotate by size/backups | `sessions stop/prune`, `artifacts prune`, `artifacts scrub` |
 | run artifacts | keep | `artifacts scrub`; explicit `artifacts prune --class run` |
 | blobs | keep while referenced | future `runs gc` |
-| worktrees | keep after run | future `worktrees prune` |
+| worktrees | keep after run | `worktrees prune --status abandoned --dry-run`; `--delete` to remove |
 | session archives | keep | `artifacts prune`, `artifacts scrub` |
 | SQLite index | rebuildable | future `index rebuild` |
 
@@ -383,7 +383,9 @@ Before public release:
    exist.
 3. Capability-aware routing.
 4. Artifact retention and redaction.
-5. Worktree prune workflow.
+5. Worktree prune workflow. Done through `councli worktrees prune`, which
+   defaults to dry-run and only removes safe councli-created worktrees with
+   `--delete`.
 6. Metrics derived from event logs.
 7. Redacted support bundle.
 8. Versioned config and artifact schema migrations.

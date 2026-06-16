@@ -301,6 +301,8 @@ councli artifacts scrub --dry-run
 councli artifacts scrub --write
 councli artifacts prune --older-than 30 --dry-run
 councli artifacts prune --older-than 30 --delete
+councli worktrees prune --status abandoned --dry-run
+councli worktrees prune --status abandoned --delete
 ```
 
 `status` lists recent run ids with task, participants, decision, review, and
@@ -320,6 +322,9 @@ and snapshots by default, and only deletes when `--delete` is supplied.
 `artifacts export` creates a redacted `.tar.gz` support bundle with a manifest.
 It exports run/task/ledger/snapshot artifacts by default and excludes raw
 terminal recordings unless you explicitly choose that artifact class.
+`worktrees prune` finds councli-created implementation worktrees from run state.
+It defaults to dry-run and only removes safe registered worktrees on `councli/`
+branches under the expected `.councli-worktrees/<repo>` directory.
 `metrics` derives local JSON or OpenMetrics-style counters from event logs,
 participant response sidecars, and artifact sizes.
 

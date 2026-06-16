@@ -14,7 +14,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import typer
 import yaml
@@ -67,7 +67,16 @@ from councli.council import (
     run_review_phase,
 )
 from councli.events import EVENT_SCHEMA_VERSION, EventLedger, project_state, read_events, read_events_prefix, render_blackboard
-from councli.gitops import apply_unified_diff, create_worktree, current_commit, diff, ensure_clean_enough, require_git_repo
+from councli.gitops import (
+    apply_unified_diff,
+    create_worktree,
+    current_commit,
+    diff,
+    ensure_clean_enough,
+    list_worktrees,
+    remove_worktree,
+    require_git_repo,
+)
 from councli.native import (
     append_project_event,
     raw_capture_path,
@@ -95,9 +104,11 @@ app = typer.Typer(
 sessions_app = typer.Typer(help="Manage native tmux-backed agent sessions.")
 artifacts_app = typer.Typer(help="Inspect, redact, and prune local councli artifacts.")
 config_app = typer.Typer(help="Inspect and migrate project-local councli config.")
+worktrees_app = typer.Typer(help="Inspect and prune councli implementation worktrees.")
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(artifacts_app, name="artifacts")
 app.add_typer(config_app, name="config")
+app.add_typer(worktrees_app, name="worktrees")
 console = Console(width=140)
 NATIVE_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,256}$")
 EXPERIMENTAL_ENV = "COUNCLI_EXPERIMENTAL"
@@ -134,6 +145,19 @@ class ArtifactCandidate:
     bytes: int
     modified_at: datetime
     is_dir: bool = False
+
+
+@dataclass(frozen=True)
+class WorktreeCandidate:
+    run_id: str
+    attempt: int | None
+    path: Path
+    branch: str
+    status: str
+    exists: bool
+    registered: bool
+    safe_to_remove: bool
+    reason: str
 
 
 def print_mascot() -> None:
@@ -2233,6 +2257,231 @@ def format_bytes(size: int) -> str:
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
     return f"{size} B"
+
+
+@worktrees_app.command("prune")
+def worktrees_prune(
+    root: RootOpt = Path.cwd(),
+    status: Annotated[
+        Literal["abandoned", "failed", "canceled", "superseded", "applied", "completed", "active", "all"],
+        typer.Option("--status", help="Worktree status to select. 'abandoned' means failed, canceled, or superseded."),
+    ] = "abandoned",
+    delete: Annotated[
+        bool,
+        typer.Option("--delete/--dry-run", help="Actually remove selected safe worktrees. Defaults to dry-run."),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print machine-readable candidate JSON.")] = False,
+) -> None:
+    """Prune councli-created implementation worktrees."""
+    require_git_repo(root)
+    candidates = filter_worktree_candidates(collect_worktree_candidates(root), status=status)
+    report: dict[str, Any] = {
+        "schema_version": "councli.worktrees.prune.v1",
+        "status": status,
+        "delete": delete,
+        "worktrees": [worktree_candidate_json(candidate) for candidate in candidates],
+        "removed": [],
+        "skipped": 0,
+        "errors": [],
+    }
+    if not candidates:
+        if json_output:
+            console.print_json(data=report)
+        else:
+            console.print("No matching councli worktrees.")
+        return
+    if not delete:
+        if json_output:
+            console.print_json(data=report)
+            return
+        print_worktree_table("Councli worktrees to prune", candidates)
+        console.print("[dim]Dry run only. Run again with --delete to remove safe selected worktrees.[/]")
+        return
+    if not json_output:
+        print_worktree_table("Councli worktrees selected for pruning", candidates)
+
+    removed: list[WorktreeCandidate] = []
+    skipped = 0
+    errors: list[str] = []
+    for candidate in candidates:
+        if not candidate.safe_to_remove:
+            skipped += 1
+            continue
+        proc = remove_worktree(root, candidate.path)
+        if proc.returncode != 0:
+            errors.append(f"{candidate.path}: {(proc.stderr or proc.stdout).strip() or 'git worktree remove failed'}")
+            continue
+        removed.append(candidate)
+
+    if removed:
+        append_project_event(
+            root,
+            "worktrees.pruned",
+            payload={
+                "selected_status": status,
+                "removed": len(removed),
+                "skipped": skipped,
+                "worktrees": [worktree_candidate_json(candidate) for candidate in removed],
+            },
+        )
+    report["removed"] = [worktree_candidate_json(candidate) for candidate in removed]
+    report["skipped"] = skipped
+    report["errors"] = errors
+    if json_output:
+        console.print_json(data=report)
+    else:
+        console.print(f"[green]Removed:[/] {len(removed)} worktree(s)")
+        if skipped:
+            console.print(f"[yellow]Skipped unsafe/incomplete:[/] {skipped} worktree(s)")
+        for error in errors:
+            console.print(f"[red]Remove failed:[/] {error}")
+    if errors:
+        raise typer.Exit(code=2)
+
+
+def collect_worktree_candidates(root: Path) -> list[WorktreeCandidate]:
+    try:
+        registered = {path.resolve(strict=False): meta for path, meta in list_worktrees(root).items()}
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2) from exc
+    candidates: list[WorktreeCandidate] = []
+    seen: set[Path] = set()
+    expected_base = expected_worktree_base(root)
+    for run_dir in list_run_dirs(root):
+        state = load_run_state(run_dir)
+        implementation = state.get("implementation") if isinstance(state.get("implementation"), dict) else {}
+        attempts = implementation.get("attempts") if isinstance(implementation.get("attempts"), list) else []
+        if not attempts and implementation.get("worktree"):
+            attempts = [implementation]
+        latest_path = str(implementation.get("worktree") or "")
+        for attempt in attempts:
+            if not isinstance(attempt, dict) or not attempt.get("worktree"):
+                continue
+            path = Path(str(attempt["worktree"]))
+            resolved = path.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            meta = registered.get(resolved, {})
+            branch = str(attempt.get("branch") or meta.get("branch") or "")
+            status = classify_worktree_candidate(state=state, attempt=attempt, latest_path=latest_path)
+            safe, reason = assess_worktree_removal_safety(
+                path=path,
+                resolved=resolved,
+                branch=branch,
+                expected_base=expected_base,
+                registered=bool(meta),
+                status=status,
+            )
+            candidates.append(
+                WorktreeCandidate(
+                    run_id=run_dir.name,
+                    attempt=attempt.get("attempt") if isinstance(attempt.get("attempt"), int) else None,
+                    path=path,
+                    branch=branch,
+                    status=status,
+                    exists=path.exists(),
+                    registered=bool(meta),
+                    safe_to_remove=safe,
+                    reason=reason,
+                )
+            )
+    return sorted(candidates, key=lambda candidate: (candidate.status, candidate.run_id, str(candidate.path)))
+
+
+def classify_worktree_candidate(*, state: dict[str, Any], attempt: dict[str, Any], latest_path: str) -> str:
+    implementation = state.get("implementation") if isinstance(state.get("implementation"), dict) else {}
+    run_completed = state.get("run_completed") if isinstance(state.get("run_completed"), dict) else None
+    run_canceled = state.get("run_canceled") if isinstance(state.get("run_canceled"), dict) else None
+    worktree_path = str(attempt.get("worktree") or "")
+    if implementation.get("applied") and worktree_path == latest_path:
+        return "applied"
+    if worktree_path and latest_path and worktree_path != latest_path:
+        return "superseded"
+    if run_canceled:
+        return "canceled"
+    if run_completed:
+        return "completed" if run_completed.get("implemented") else "failed"
+    return "active"
+
+
+def assess_worktree_removal_safety(
+    *,
+    path: Path,
+    resolved: Path,
+    branch: str,
+    expected_base: Path,
+    registered: bool,
+    status: str,
+) -> tuple[bool, str]:
+    removable_statuses = {"failed", "canceled", "superseded", "applied"}
+    if status not in removable_statuses:
+        return False, f"status {status} is not removable by prune"
+    if not registered:
+        return False, "not registered in git worktree list"
+    if not path.exists():
+        return False, "path is missing; inspect git worktree list/prune manually"
+    if not path_is_relative_to(resolved, expected_base):
+        return False, f"path is outside expected councli worktree root {expected_base}"
+    if not branch.startswith("councli/"):
+        return False, "branch does not start with councli/"
+    return True, "safe"
+
+
+def filter_worktree_candidates(candidates: list[WorktreeCandidate], *, status: str) -> list[WorktreeCandidate]:
+    if status == "all":
+        return candidates
+    selected = {"failed", "canceled", "superseded"} if status == "abandoned" else {status}
+    return [candidate for candidate in candidates if candidate.status in selected]
+
+
+def expected_worktree_base(root: Path) -> Path:
+    return (root.parent / ".councli-worktrees" / root.name).resolve(strict=False)
+
+
+def path_is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def print_worktree_table(title: str, candidates: list[WorktreeCandidate]) -> None:
+    table = Table(title=title, expand=False)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Safe", no_wrap=True)
+    table.add_column("Run", no_wrap=True)
+    table.add_column("Attempt", no_wrap=True)
+    table.add_column("Branch")
+    table.add_column("Path")
+    table.add_column("Reason")
+    for candidate in candidates:
+        table.add_row(
+            candidate.status,
+            "yes" if candidate.safe_to_remove else "no",
+            candidate.run_id,
+            str(candidate.attempt or "-"),
+            candidate.branch or "-",
+            str(candidate.path),
+            candidate.reason,
+        )
+    console.print(table)
+
+
+def worktree_candidate_json(candidate: WorktreeCandidate) -> dict[str, Any]:
+    return {
+        "run_id": candidate.run_id,
+        "attempt": candidate.attempt,
+        "path": str(candidate.path),
+        "branch": candidate.branch,
+        "status": candidate.status,
+        "exists": candidate.exists,
+        "registered": candidate.registered,
+        "safe_to_remove": candidate.safe_to_remove,
+        "reason": candidate.reason,
+    }
 
 
 @app.command()

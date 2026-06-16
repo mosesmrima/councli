@@ -1302,6 +1302,62 @@ class EventArchitectureTests(unittest.TestCase):
             self.assertIn("committed by executor", diff_text)
             self.assertIn("README.md", diff_text)
 
+    def test_worktrees_prune_defaults_to_dry_run_and_deletes_with_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self.prepare_fake_repo(tmp)
+            worktree = create_worktree(root, run_name="canceled-run-attempt1", executor="alpha")
+            run_dir = root / ".councli" / "runs" / "canceled-run"
+            ledger = EventLedger(run_dir, run_id="canceled-run")
+            ledger.append("run.started", payload={"task": "cancel worktree task"})
+            ledger.append(
+                "implementation.started",
+                participant="alpha",
+                payload={
+                    "attempt": 1,
+                    "executor": "alpha",
+                    "worktree": str(worktree.path),
+                    "branch": worktree.branch,
+                    "base_ref": worktree.base_ref,
+                },
+            )
+            ledger.append("run.canceled", status="canceled", participant="alpha", payload={"phase": "implementation"})
+            ledger.render()
+
+            preview = subprocess.run(
+                [PYTHON, "-m", "councli", "worktrees", "prune", "-C", str(root), "--json"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+            preview_data = json.loads(preview.stdout)
+            self.assertFalse(preview_data["delete"])
+            self.assertEqual(preview_data["worktrees"][0]["path"], str(worktree.path))
+            self.assertTrue(preview_data["worktrees"][0]["safe_to_remove"])
+            self.assertTrue(worktree.path.exists())
+
+            deleted = subprocess.run(
+                [PYTHON, "-m", "councli", "worktrees", "prune", "-C", str(root), "--delete"],
+                cwd=REPO_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(deleted.returncode, 0, deleted.stdout + deleted.stderr)
+            self.assertIn("Removed:", deleted.stdout)
+            self.assertFalse(worktree.path.exists())
+            listed = subprocess.run(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotIn(str(worktree.path), listed.stdout)
+
     def test_cli_status_and_show_latest_expose_resume_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root, _ = self.prepare_fake_repo(tmp)

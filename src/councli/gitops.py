@@ -81,6 +81,47 @@ def create_worktree(root: Path, *, run_name: str, executor: str) -> WorktreeInfo
     return WorktreeInfo(branch=branch, path=path, base_ref=base_ref)
 
 
+def list_worktrees(root: Path) -> dict[Path, dict[str, str]]:
+    proc = git(root, ["worktree", "list", "--porcelain"])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "could not list git worktrees")
+    worktrees: dict[Path, dict[str, str]] = {}
+    current_path: Path | None = None
+    current: dict[str, str] = {}
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if current_path is not None:
+                worktrees[current_path] = current
+            current_path = None
+            current = {}
+            continue
+        if line.startswith("worktree "):
+            if current_path is not None:
+                worktrees[current_path] = current
+            current_path = Path(line.removeprefix("worktree "))
+            current = {}
+            continue
+        if current_path is None:
+            continue
+        if line.startswith("branch "):
+            branch = line.removeprefix("branch ")
+            current["branch"] = branch.removeprefix("refs/heads/")
+        elif line.startswith("HEAD "):
+            current["head"] = line.removeprefix("HEAD ")
+        elif line == "bare":
+            current["bare"] = "true"
+        elif line == "detached":
+            current["detached"] = "true"
+    if current_path is not None:
+        worktrees[current_path] = current
+    return worktrees
+
+
+def remove_worktree(root: Path, path: Path) -> subprocess.CompletedProcess[str]:
+    return git(root, ["worktree", "remove", "--force", str(path)], timeout=120)
+
+
 def diff(root: Path, *, base_ref: str | None = None) -> str:
     args = ["diff", "--binary"]
     if base_ref:
