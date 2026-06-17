@@ -5,10 +5,10 @@ prompts to installed assistants, records their responses on an inspectable
 blackboard, gives them shared visibility into each other's output, and returns a
 unified answer while preserving each assistant's native harness.
 
-It is not a model provider, not a replacement for Claude Code/Codex/AGY/Kimi,
-and not a new tool sandbox. The assistants remain ordinary binaries on your
-machine; `councli` is the room, recorder, router, and coordination layer around
-them.
+It is not a model provider, not a replacement for Claude Code, Codex, AGY, Kimi
+Code, or CodeWhale, and not a new tool sandbox. The assistants remain ordinary
+binaries on your machine; `councli` is the room, recorder, router, and
+coordination layer around them.
 
 ## Features
 
@@ -18,8 +18,9 @@ them.
   plane.
 - File-backed blackboards under `.councli/runs/`.
 - Packet-file prompts and response sidecars for inspectable collaboration.
-- Configurable participants for `codex`, `claude`, `agy`, `codewhale`, `kimi`,
-  and custom adapters.
+- Configurable participants for the supported MVP assistants: Codex (`codex`),
+  Claude Code (`claude`), AGY (`agy`), CodeWhale (`codewhale`), and Kimi Code
+  (`kimi`).
 - `/enable <agent>`, `/disable <agent>`, and `/agents` for participant control.
 - Native attach mode for using an assistant's own TUI when `tmux` is available.
 - Read-only broadcast mode for comparing answers across assistants.
@@ -40,8 +41,23 @@ them.
 | Windows | Supported | Supported with exec-mode agents | Use WSL for tmux |
 | WSL | Supported | Supported | Supported with `tmux` |
 
-Assistant availability depends on whether that assistant CLI is installed,
-authenticated, configured, and on `PATH` in the same shell.
+## Supported assistants and auth
+
+The MVP supports these native coding-agent CLIs:
+
+| Assistant | Binary command |
+| --- | --- |
+| Codex | `codex` |
+| Claude Code | `claude` |
+| AGY | `agy` |
+| CodeWhale | `codewhale` |
+| Kimi Code | `kimi` |
+
+Each assistant must already be installed, logged in/authenticated, model-ready,
+and available on `PATH` in the same shell where `councli` runs. `councli` does
+not manage provider accounts, subscriptions, API keys, login flows, OAuth/device
+codes, or model configuration. Launch the assistant directly first, complete its
+native auth/setup, then let `councli` discover and coordinate it.
 
 ## Install
 

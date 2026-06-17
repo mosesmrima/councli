@@ -31,7 +31,8 @@ engine.
 
 1. Preserve native agents.
    - Use installed/authenticated CLI binaries as they are.
-   - Do not rebuild Codex, Claude Code, AGY, Kimi, CodeWhale, or other agents.
+   - Do not rebuild the supported native agents: Codex, Claude Code, AGY,
+     Kimi Code, and CodeWhale.
    - Do not make councli's protocol replace the native agent's harness.
 
 2. No default budgets or artificial clipping.

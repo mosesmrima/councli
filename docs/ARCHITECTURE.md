@@ -1,7 +1,8 @@
 # councli architecture
 
-`councli` is a local control plane for multiple coding CLIs. It does not try to
-replace Codex, Claude Code, AGY, Kimi, CodeWhale, or other assistants. It hosts
+`councli` is a local control plane for supported coding CLIs. The MVP supports
+Codex (`codex`), Claude Code (`claude`), AGY (`agy`), Kimi Code (`kimi`), and
+CodeWhale (`codewhale`). It does not try to replace those assistants. It hosts
 their native terminal sessions, records coordination metadata, gives
 participants shared visibility through blackboard artifacts, and uses headless
 paths for automation when a CLI exposes a prompt-capable command.

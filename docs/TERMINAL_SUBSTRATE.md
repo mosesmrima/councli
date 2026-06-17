@@ -15,8 +15,9 @@ substrates.
 
 1. A structured automation path for shared turns, deliberation, voting,
    broadcast, review, and repeatable artifact capture.
-2. A native interactive path where the user can enter Codex, Claude Code, AGY,
-   Kimi, CodeWhale, or another assistant exactly as that tool expects to run.
+2. A native interactive path where the user can enter a supported assistant
+   exactly as that tool expects to run: Codex, Claude Code, AGY, Kimi Code, or
+   CodeWhale.
 
 Those paths should share project identity, artifacts, and session metadata, but
 they should not share the same semantic transport.

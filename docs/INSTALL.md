@@ -7,10 +7,13 @@ environment and exposes the `councli` shell command on your `PATH`.
 ## Requirements
 
 - Python 3.11 or newer.
-- At least one supported coding assistant CLI on `PATH`, such as `codex`,
-  `claude`, `agy`, `codewhale`, or `kimi`.
-- Each assistant must already be installed and authenticated in its own native
-  way. `councli` does not manage provider API keys or model subscriptions.
+- At least one supported coding assistant CLI on `PATH`.
+- Supported MVP assistants: Codex (`codex`), Claude Code (`claude`), AGY
+  (`agy`), CodeWhale (`codewhale`), and Kimi Code (`kimi`).
+- Each assistant must already be installed, logged in/authenticated, model-ready,
+  and usable when launched directly. `councli` does not manage provider
+  accounts, subscriptions, API keys, OAuth/device-code login, or model
+  configuration.
 - `tmux` is optional. It is needed for native attach/session features, not for
   basic non-interactive council turns.
 

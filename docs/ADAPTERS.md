@@ -4,6 +4,21 @@
 layer should preserve each tool's own UI, commands, permissions, sessions, MCP
 configuration, slash commands, and subagent features.
 
+The MVP supports only these native coding-agent CLIs:
+
+| Assistant | Binary command |
+| --- | --- |
+| Codex | `codex` |
+| Claude Code | `claude` |
+| AGY | `agy` |
+| CodeWhale | `codewhale` |
+| Kimi Code | `kimi` |
+
+Each assistant must already be installed, authenticated/logged in, model-ready,
+and usable through its own native CLI. `councli` launches and coordinates those
+binaries; it does not collect provider credentials, create accounts, manage
+subscriptions, run OAuth/device-code flows, or configure models.
+
 The generic launch/readiness/capability contract lives in
 `ADAPTER_CONTRACT.md`. This file records participant-specific command behavior
 and local observations.

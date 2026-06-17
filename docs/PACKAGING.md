@@ -102,5 +102,9 @@ Feature support still depends on external binaries:
 
 - Core exec-mode council turns: Linux, macOS, Windows, WSL.
 - Native tmux-backed assistant sessions: Linux, macOS, WSL.
+- Supported MVP assistants: Codex (`codex`), Claude Code (`claude`), AGY
+  (`agy`), CodeWhale (`codewhale`), and Kimi Code (`kimi`).
 - Assistant availability: only when that assistant CLI is installed,
-  authenticated, and on `PATH` in the same shell where `councli` runs.
+  logged in/authenticated, model-ready, and on `PATH` in the same shell where
+  `councli` runs. `councli` does not manage provider auth, API keys,
+  subscriptions, or model configuration.
