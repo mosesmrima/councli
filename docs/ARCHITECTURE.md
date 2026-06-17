@@ -46,6 +46,9 @@ are tools, not protocol invariants.
 See `PROTOCOL_DESIGN.md` for the target shared-turn envelopes, state machine,
 sidecar schemas, locking rules, and recovery behavior.
 
+See `ROADMAP.md` for the current adapter, communication protocol, token
+efficiency, and UX hardening priorities.
+
 See `SECURITY_MODEL.md` for the threat model, command trust boundary,
 permission model, artifact secrecy rules, and hardening roadmap.
 

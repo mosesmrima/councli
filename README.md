@@ -163,6 +163,21 @@ councli artifacts scrub --dry-run
 councli artifacts export --output support.tar.gz
 ```
 
+## Roadmap
+
+Current priorities:
+
+- Better harness adapters for Codex, Claude Code, AGY, CodeWhale, and Kimi
+  Code.
+- Stronger shared communication protocol: turn packets, blackboard, sidecars,
+  event log, and recovery.
+- Better token efficiency: compact prompts, peer-context summaries, fewer
+  automatic rounds, and artifact references instead of repeated context.
+- Better interactive UX around slash commands, participant status, synthesis,
+  and native attach.
+
+See [Roadmap](docs/ROADMAP.md).
+
 ## Development
 
 ```bash
@@ -180,6 +195,7 @@ uv build
 - [Protocol design](docs/PROTOCOL_DESIGN.md)
 - [Adapter contract](docs/ADAPTER_CONTRACT.md)
 - [Participant adapter notes](docs/ADAPTERS.md)
+- [Roadmap](docs/ROADMAP.md)
 - [Terminal substrate](docs/TERMINAL_SUBSTRATE.md)
 - [Security model](docs/SECURITY_MODEL.md)
 - [Packaging and release notes](docs/PACKAGING.md)
