@@ -8,6 +8,20 @@ It does not replace Codex, Claude Code, AGY, CodeWhale, or Kimi Code. Those
 tools remain normal binaries on your machine. `councli` is the coordination
 layer around them: room, recorder, router, and shared memory.
 
+## Positioning
+
+Multi-model platforms and agent frameworks already exist. Some route prompts to
+hosted models, some synthesize model panels, and some help developers build new
+agent workflows.
+
+`councli` is narrower: it coordinates the coding assistants you already run in
+your terminal. It preserves their native harnesses, auth, tools, permissions,
+slash commands, MCP configuration, and session behavior instead of rebuilding
+them as API agents.
+
+In short: `councli` is the missing local room for developers who already use
+multiple coding assistants and want them to think together inside the same repo.
+
 ## Install
 
 ```bash

@@ -13,6 +13,12 @@ Use multiple coding assistants in one shared room so they can expose each
 other's blind spots and produce a unified answer without forcing the user to
 copy context between tools.
 
+The project is intentionally not a general multi-agent framework, model router,
+or hosted model workspace. Those systems coordinate models or user-defined API
+agents. `councli` coordinates already-installed coding-agent harnesses and keeps
+their native auth, permissions, tools, slash commands, MCP configuration, and
+terminal workflows intact.
+
 The default workflow is conversation, not governance:
 
 ```text
